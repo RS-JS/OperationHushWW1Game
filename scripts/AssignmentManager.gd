@@ -15,10 +15,9 @@ func setup_references(controller: Control, data_mgr: DataManager, ui_mgr: UIMana
 	main_controller = controller
 	data_manager = data_mgr
 	ui_manager = ui_mgr
-	
 	# Connect UI signals
 	ui_manager.assignment_change.connect(_on_assignment_change)
-
+	
 func start_pontoon_assignments():
 	"""Start the pontoon assignment sequence - handles both tanks and troops"""
 	data_manager.pontoon_assault_plan.clear()
@@ -183,7 +182,7 @@ func _ask_for_next_main_force_assignment():
 	ui_manager.setup_choices(["➖", "➕", "Assign"])
 	
 	# Connect choices
-	await ui_manager.choice_made
+	
 	var choice = await ui_manager.choice_made
 	_handle_main_force_input(choice)
 

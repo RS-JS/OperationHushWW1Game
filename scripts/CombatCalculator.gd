@@ -106,11 +106,21 @@ func resolve_pontoon_assault() -> String:
 		report += "In full daylight, the pontoon monitors advance boldly toward the enemy shore...\n\n"
 
 	for beach_name in data_manager.assignment_order:
+		# --- Tally Ho effect (33% chance, -15% enemy artillery per beach) ---
+		if data_manager.air_doctrine == "tally_ho" and randf() < 0.33:
+				var target: Dictionary = data_manager.targets[beach_name]  # <-- explicit type
+				var initial_artillery: int = int(target.get("artillery", 0))
+				if initial_artillery > 0:
+					var reduction: int = floori(initial_artillery * 0.15)
+					if reduction > 0:
+						target["artillery"] = max(0, initial_artillery - reduction)
+						report += "RFC executes 'Tally Ho' over " + beach_name + "! " + str(reduction) + " enemy guns knocked out in a daring low-level attack.\n\n"
+		# ---------------------------------------------------------------
+		
 		report += resolve_beach_pontoon_assault(beach_name)
 		report += "\n"
 
 	report += generate_pontoon_operation_summary()
-
 	return report
 
 func apply_environmental_effects():

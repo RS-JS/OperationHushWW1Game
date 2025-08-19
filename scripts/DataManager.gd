@@ -44,7 +44,6 @@ var q_ship_assignment = "none"
 var time_of_day = "day"
 var tanks_chosen = false
 var bombardment_plan = "gunners"
-var air_doctrine = "none"
 var assault_doctrine = "coordinated"
 var threat_level = 0
 var mustard_gas_used = false
@@ -58,6 +57,9 @@ var current_assignment_type = "troops"
 var assignment_values = {}
 var barge_manifest = {}
 var pontoon_status = {}
+
+
+var air_doctrine = "aerial"
 
 func initialize_game_data():
 	populate_monitors()
@@ -338,8 +340,12 @@ func set_time_of_day(choice: String):
 	elif choice == "Daylight Assault": time_of_day = "day"
 
 func set_air_doctrine(choice: String):
-	if choice == "Air Reconnaissance": air_doctrine = "recon"
-	elif choice == "Ground Attack": air_doctrine = "ground_attack"
+	if choice == "Air Reconnaissance":
+		air_doctrine = "recon"
+	elif choice == "Ground Attack":
+		air_doctrine = "ground_attack"
+	elif choice == "Tally Ho":
+		air_doctrine = "tally_ho"
 
 func set_assault_doctrine(choice: String):
 	if "Immediate" in choice:

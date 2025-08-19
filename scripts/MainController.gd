@@ -46,6 +46,7 @@ func initialize_modules():
 	ui_manager.setup_references(self, data_manager)
 	combat_calculator.setup_references(data_manager)
 	assignment_manager.setup_references(self, data_manager, ui_manager)
+	assignment_manager.assignment_complete.connect(_on_assignment_complete)
 	main_force_manager.setup_references(data_manager, ui_manager)
 	consolidation_manager.setup_references(data_manager, ui_manager)
 	
@@ -112,12 +113,16 @@ func _on_choice_made(choice: String):
 			print("Unhandled phase: ", Phases.keys()[current_phase])
 
 func _on_assignment_complete():
-	# Called when assignment manager completes all assignments
-	var assault_report = combat_calculator.resolve_pontoon_assault()
-	current_phase = Phases.PONTOON_ASSAULT_REPORT
-	ui_manager.show_standard_ui()
-	ui_manager.display_message(assault_report)
-	ui_manager.setup_choices(["Plan Main Force Disembarkation"])
+	# Immediate: assignments first, now go to bombardment
+	if data_manager.assault_doctrine == "immediate":
+		show_planning_summary()  # leads to Begin Bombardment -> start_bombardment_report_phase()
+	else:
+		# Coordinated: bombardment already done and reviewed; proceed to assault
+		var report := combat_calculator.resolve_pontoon_assault()
+		current_phase = Phases.PONTOON_ASSAULT_REPORT
+		ui_manager.set_image("res://assets/landing.jpeg")
+		ui_manager.display_message(report)
+		ui_manager.setup_choices(["Plan Main Force Disembarkation"])
 
 func _on_consolidation_complete():
 	# Handle completion of consolidation phase
@@ -260,9 +265,8 @@ func process_time_of_day_choice(choice):
 func start_air_doctrine_phase():
 	current_phase = Phases.AIR_DOCTRINE_DECISION
 	ui_manager.set_image("res://assets/Flashheart.jpeg")
-	ui_manager.display_message("--- STEP 7: AIR DOCTRINE ---\n\nThe Royal Flying Corps is eager to help. Where do you want them?\n\n • Air Reconnaissance: Estimate enemy strength.\n • Ground Attack: Strafe trenches and gun-pits.")
-	ui_manager.setup_choices(["Air Reconnaissance", "Ground Attack"])
-
+	ui_manager.display_message("--- STEP 7: AIR DOCTRINE ---\n\nThe Royal Flying Corps is eager to help. Where do you want them?\n\n • Air Reconnaissance: Estimate enemy strength.\n • Ground Attack: Strafe trenches and gun-pits.\n • Tally Ho: A suicidal run towards the artillery guns, increasing the chance enemy artillery is reduced at the pontoon stage.")
+	ui_manager.setup_choices(["Air Reconnaissance", "Ground Attack", "Tally Ho"])
 func process_air_doctrine_choice(choice):
 	data_manager.set_air_doctrine(choice)
 	start_assault_doctrine_phase()
@@ -311,11 +315,14 @@ func start_bombardment_report_phase():
 
 func handle_bombardment_completion():
 	if data_manager.assault_doctrine == "immediate":
-		var assault_report = combat_calculator.resolve_pontoon_assault()
+		# Immediate: assignments were already set; now resolve the pontoon assault
+		var report := combat_calculator.resolve_pontoon_assault()
 		current_phase = Phases.PONTOON_ASSAULT_REPORT
-		ui_manager.display_message(assault_report)
+		ui_manager.set_image("res://assets/landing.jpeg")
+		ui_manager.display_message(report)
 		ui_manager.setup_choices(["Plan Main Force Disembarkation"])
 	else:
+		# Coordinated: after bombardment, go to assignments to adjust based on results
 		start_monitor_assignment_briefing_phase()
 
 func start_assignment_phases():
