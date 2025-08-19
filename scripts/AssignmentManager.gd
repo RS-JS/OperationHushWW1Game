@@ -54,28 +54,34 @@ func _get_total_units_for_current_type() -> int:
 		return data_manager.get_troop_monitors_available()
 
 func _on_assignment_change(beach_name: String, change: int):
-	"""Handle +/- button presses for assignment values"""
 	var total_units = _get_total_units_for_current_type()
 	
+	# Calculate what the new value would be
+	var current_value = assignment_values[beach_name]
+	var new_value = current_value + change
+	
+	# Calculate total after this change
 	var total_assigned = 0
 	for beach in assignment_values:
-		total_assigned += assignment_values[beach]
-	
-	var new_value = assignment_values[beach_name] + change
+		if beach == beach_name:
+			total_assigned += new_value  # Use the new value for this beach
+		else:
+			total_assigned += assignment_values[beach]
 	
 	# Validate the change
 	if new_value < 0:
 		return
-	if change > 0 and total_assigned >= total_units:
+	if total_assigned > total_units:  # Changed from >= to >
 		return
 		
+	# Apply the change
 	assignment_values[beach_name] = new_value
 	
-	# Refresh the UI
+	# Refresh UI
 	ui_manager.setup_pontoon_assignment_ui(current_assignment_type, assignment_values, total_units)
-
 func _on_assignment_confirm():
 	"""Handle confirmation of current assignment type"""
+	print("Confirm pressed. Type:", current_assignment_type, " Values:", assignment_values)
 	print("=== ASSIGNMENT CONFIRM ===")
 	print("Current assignment type: ", current_assignment_type)
 	print("Assignment values: ", assignment_values)
@@ -92,6 +98,7 @@ func _on_assignment_confirm():
 
 func _advance_assignment_phase():
 	"""Determine what assignment phase comes next"""
+	print("Advance called. Tank plan:", data_manager.tank_assault_plan,)
 	print("=== ASSIGNMENT PHASE ROUTER ===")
 	print("Current phase: ", current_assignment_type)
 	print("Tanks chosen: ", data_manager.tanks_chosen)
@@ -149,6 +156,7 @@ func _show_troop_assignment_briefing():
 
 func _complete_assignments():
 	"""All pontoon assignments are complete"""
+	print("Assignments complete!")
 	print("All pontoon assignments complete")
 	assignment_complete.emit()
 

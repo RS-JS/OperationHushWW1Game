@@ -114,7 +114,7 @@ func calculate_beach_threats() -> Dictionary:
 	return threats
 
 func execute_main_force_disembarkation(beach_threats: Dictionary) -> String:
-	"""Execute the detailed main force landing with casualties"""
+	"""Execute the detailed main force landing with casualties, including new logic for contested pontoons."""
 	var report = "--- MAIN FORCE DISEMBARKATION REPORT ---\n\n"
 	report += "With the pontoon assault complete, the signal is given. Across the grey waters, trawlers and barges packed with the men of the 1st Division surge toward the Belgian coast...\n\n"
 
@@ -125,8 +125,19 @@ func execute_main_force_disembarkation(beach_threats: Dictionary) -> String:
 		report += "=== " + beach_name.to_upper() + " ===\n"
 		var beach_barges = barge_manifest[beach_name]
 
-		if pontoon_status[beach_name]:
-			report += "**PONTOON BRIDGES OPERATIONAL**: The main force can disembark directly onto the promenade!\n"
+		var beach_status = data_manager.targets[beach_name].get("beach_status", "Unknown")
+		var pontoons_ok = pontoon_status[beach_name]
+
+		# --- Landing messaging and casualty logic ---
+		if pontoons_ok:
+			if beach_status == "Secured":
+				report += "**PONTOON BRIDGES OPERATIONAL**: The main force can disembark directly onto the promenade!\n"
+			elif beach_status == "Contested":
+				report += "**PONTOON BRIDGES CONTESTED**: The main force lands via the pontoon bridges, but heavy fighting continues at the bridgehead!\n"
+			elif beach_status == "Pinned Down":
+				report += "**PONTOON BRIDGES PINNED DOWN**: The main force lands via the pontoon bridges, but is pinned down by fierce enemy fire!\n"
+			else:
+				report += "**PONTOON BRIDGES**: The main force uses the pontoon bridges, but the situation is uncertain.\n"
 		else:
 			report += "**NO PONTOON BRIDGES**: Men must scale the 30-foot seawall under heavy fire!\n"
 
@@ -164,9 +175,25 @@ func execute_main_force_disembarkation(beach_threats: Dictionary) -> String:
 
 		report += "Approach Results: Of " + str(beach_barges.size()) + " barges, " + str(barges_lost_this_beach) + " were lost, and scattered by shellfire.\n"
 
-		# Calculate seawall casualties if no pontoons
+		# --- Main force landing casualty logic ---
+		var extra_combat_casualties = 0
 		var seawall_casualties_this_beach = 0
-		if not pontoon_status[beach_name]:
+
+		if pontoons_ok:
+			# Extra casualties for contested/pinned down pontoons
+			if beach_status == "Contested" or beach_status == "Pinned Down":
+				var penalty = 0.25 if beach_status == "Contested" else 0.40
+				for barge in beach_barges:
+					if barge.status != "Lost":
+						var surviving_men = barge.men - barge.casualties
+						var extra = int(surviving_men * penalty)
+						barge.casualties += extra
+						extra_combat_casualties += extra
+				if extra_combat_casualties > 0:
+					report += "Heavy resistance at the bridgehead inflicts an extra " + str(extra_combat_casualties) + " casualties during the landing.\n"
+			report += "**PONTOON DISEMBARKATION**: The main force disembarks via the pontoon bridges.\n"
+		else:
+			# No pontoons: must climb the wall, heavy casualties
 			report += "**SCALING THE SEAWALL**: Without pontoon bridges, men must climb the 30-foot concrete wall under machine gun fire!\n"
 			
 			var initial_garrison = data_manager.initial_targets_state[beach_name].get("garrison", 1)
@@ -185,8 +212,6 @@ func execute_main_force_disembarkation(beach_threats: Dictionary) -> String:
 			
 			if seawall_casualties_this_beach > 0:
 				report += "The division suffered an additional " + str(seawall_casualties_this_beach) + " casualties scaling the wall.\n"
-		else:
-			report += "**PONTOON DISEMBARKATION**: The main force disembarks directly onto the promenade via the pontoon bridges!\n"
 
 		# Calculate final results for this beach
 		var landed_survivors = 0

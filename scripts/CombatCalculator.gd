@@ -96,6 +96,22 @@ func resolve_pontoon_assault() -> String:
 	
 	apply_environmental_effects()
 	
+	if data_manager.air_doctrine == "ground_attack":
+		report += "**RFC GROUND ATTACK**: The RFC unleashes a series of strafing runs and light bombing attacks ahead of the pontoons!\n"
+		for beach_name in data_manager.assignment_order:
+			var target: Dictionary = data_manager.targets[beach_name]
+			var initial_artillery: int = int(target.get("artillery", 0))
+			var initial_garrison: int = int(target.get("garrison", 0))
+			var art_reduction: int = floori(initial_artillery * 0.10)
+			var gar_reduction: int = floori(initial_garrison * 0.07)
+			if art_reduction > 0:
+				target["artillery"] = max(0, initial_artillery - art_reduction)
+				report += " > " + beach_name + ": " + str(art_reduction) + " guns knocked out by air attacks.\n"
+			if gar_reduction > 0:
+				target["garrison"] = max(0, initial_garrison - gar_reduction)
+				report += " > " + beach_name + ": " + str(gar_reduction) + " enemy troops suppressed/dispersed.\n"
+		report += "\n"
+	
 	if data_manager.time_of_day_effective == "morning" and data_manager.morning_mist_failed:
 		report += "The morning mist that was hoped to conceal our approach has failed to materialize. The pontoon flotillas advance under clear skies...\n\n"
 	elif data_manager.time_of_day_effective == "morning":
@@ -108,13 +124,13 @@ func resolve_pontoon_assault() -> String:
 	for beach_name in data_manager.assignment_order:
 		# --- Tally Ho effect (33% chance, -15% enemy artillery per beach) ---
 		if data_manager.air_doctrine == "tally_ho" and randf() < 0.33:
-				var target: Dictionary = data_manager.targets[beach_name]  # <-- explicit type
-				var initial_artillery: int = int(target.get("artillery", 0))
-				if initial_artillery > 0:
-					var reduction: int = floori(initial_artillery * 0.15)
-					if reduction > 0:
-						target["artillery"] = max(0, initial_artillery - reduction)
-						report += "RFC executes 'Tally Ho' over " + beach_name + "! " + str(reduction) + " enemy guns knocked out in a daring low-level attack.\n\n"
+			var target: Dictionary = data_manager.targets[beach_name]
+			var initial_artillery: int = int(target.get("artillery", 0))
+			if initial_artillery > 0:
+				var reduction: int = floori(initial_artillery * 0.15)
+				if reduction > 0:
+					target["artillery"] = max(0, initial_artillery - reduction)
+					report += "RFC executes 'Tally Ho' over " + beach_name + "! " + str(reduction) + " enemy guns knocked out in a daring low-level attack.\n\n"
 		# ---------------------------------------------------------------
 		
 		report += resolve_beach_pontoon_assault(beach_name)
@@ -192,6 +208,11 @@ func resolve_approach_phase(beach_name: String, monitors_count: int, tank_lighte
 	var alertness_modifier = 1.0 + (data_manager.threat_level * 0.15)
 	var final_hit_chance = base_hit_chance * visibility_modifier * alertness_modifier
 	
+	# --- Air Recon doctrine: defensive bonus ---
+	if data_manager.air_doctrine == "recon":
+		final_hit_chance *= 0.75
+		phase_report += "RFC reconnaissance enables evasive maneuvers! Incoming fire less accurate.\n"
+	
 	phase_report += "Approach Phase: " + str(artillery_guns) + " guns open fire (Hit chance: " + str(int(final_hit_chance * 100)) + "% per vessel)\n"
 	
 	var phase_results = {
@@ -241,62 +262,6 @@ func resolve_approach_phase(beach_name: String, monitors_count: int, tank_lighte
 	phase_results.report = phase_report
 	return phase_results
 
-func resolve_submarine_phase(beach_name: String, monitors_count: int, tank_lighters_count: int, pontoon_monitors_count: int) -> Dictionary:
-	var phase_report = ""
-	var phase_results = {
-		"surviving_monitors": monitors_count,
-		"surviving_tank_lighters": tank_lighters_count,
-		"surviving_pontoons": pontoon_monitors_count,
-		"report": ""
-	}
-	
-	var base_sub_threat = 0.05 + (data_manager.threat_level * 0.02)
-	
-	if data_manager.q_ship_assignment == "screen":
-		base_sub_threat *= 0.3
-		phase_report += "Q-ships screen the landing force from submarine attack.\n"
-	elif data_manager.q_ship_assignment == "fleet":
-		base_sub_threat *= 0.8
-	
-	match data_manager.time_of_day_effective:
-		"night":
-			base_sub_threat *= 1.3
-		"day":
-			base_sub_threat *= 0.8
-	
-	if randf() < base_sub_threat:
-		phase_report += "SUBMARINE CONTACT! Periscope spotted off the port bow!\n"
-		
-		var target_roll = randf()
-		if target_roll < 0.5 and pontoon_monitors_count > 0:
-			var torpedo_hit = randf() < 0.6
-			if torpedo_hit:
-				phase_results.surviving_pontoons -= 1
-				phase_report += " > Torpedo strike! Pontoon monitor sinking! Critical mission equipment lost!\n"
-			else:
-				phase_report += " > Torpedo narrowly misses pontoon monitor!\n"
-		elif target_roll < 0.8 and monitors_count > 0:
-			var torpedo_hit = randf() < 0.6
-			if torpedo_hit:
-				phase_results.surviving_monitors -= 1
-				phase_report += " > Torpedo strike sinks troop monitor! Hundreds of men lost!\n"
-			else:
-				phase_report += " > Torpedo wake spotted, monitor takes evasive action!\n"
-		elif tank_lighters_count > 0:
-			var torpedo_hit = randf() < 0.6
-			if torpedo_hit:
-				phase_results.surviving_tank_lighters -= 1
-				phase_report += " > Tank lighter torpedoed! Armoured support lost!\n"
-			else:
-				phase_report += " > Tank lighter zigzags away from torpedo track!\n"
-	else:
-		if data_manager.q_ship_assignment == "screen":
-			phase_report += "Q-ship patrols report waters clear of enemy submarines.\n"
-		else:
-			phase_report += "No submarine contacts reported during the approach.\n"
-	
-	phase_results.report = phase_report
-	return phase_results
 
 func resolve_pontoon_deployment_phase(beach_name: String, pontoon_monitors_count: int, surviving_monitors_count: int, surviving_tank_lighters_count: int) -> Dictionary:
 	var target_data = data_manager.targets[beach_name]
@@ -353,7 +318,67 @@ func resolve_pontoon_deployment_phase(beach_name: String, pontoon_monitors_count
 		"final_tank_count": final_tank_count,
 		"report": phase_report
 	}
-
+func resolve_submarine_phase(beach_name: String, monitors_count: int, tank_lighters_count: int, pontoon_monitors_count: int) -> Dictionary:
+	var phase_report = ""
+	var phase_results = {
+		"surviving_monitors": monitors_count,
+		"surviving_tank_lighters": tank_lighters_count,
+		"surviving_pontoons": pontoon_monitors_count,
+		"report": ""
+	}
+	
+	var base_sub_threat = 0.05 + (data_manager.threat_level * 0.02)
+	
+	# --- Air Recon doctrine: defensive bonus for subs ---
+	if data_manager.air_doctrine == "recon":
+		base_sub_threat *= 0.67
+		phase_report += "RFC reconnaissance spots U-boat wakes! Submarine threat reduced.\n"
+	
+	if data_manager.q_ship_assignment == "screen":
+		base_sub_threat *= 0.3
+		phase_report += "Q-ships screen the landing force from submarine attack.\n"
+	elif data_manager.q_ship_assignment == "fleet":
+		base_sub_threat *= 0.8
+	
+	match data_manager.time_of_day_effective:
+		"night":
+			base_sub_threat *= 1.3
+		"day":
+			base_sub_threat *= 0.8
+	
+	if randf() < base_sub_threat:
+		phase_report += "SUBMARINE CONTACT! Periscope spotted off the port bow!\n"
+		
+		var target_roll = randf()
+		if target_roll < 0.5 and pontoon_monitors_count > 0:
+			var torpedo_hit = randf() < 0.6
+			if torpedo_hit:
+				phase_results.surviving_pontoons -= 1
+				phase_report += " > Torpedo strike! Pontoon monitor sinking! Critical mission equipment lost!\n"
+			else:
+				phase_report += " > Torpedo narrowly misses pontoon monitor!\n"
+		elif target_roll < 0.8 and monitors_count > 0:
+			var torpedo_hit = randf() < 0.6
+			if torpedo_hit:
+				phase_results.surviving_monitors -= 1
+				phase_report += " > Torpedo strike sinks troop monitor! Hundreds of men lost!\n"
+			else:
+				phase_report += " > Torpedo wake spotted, monitor takes evasive action!\n"
+		elif tank_lighters_count > 0:
+			var torpedo_hit = randf() < 0.6
+			if torpedo_hit:
+				phase_results.surviving_tank_lighters -= 1
+				phase_report += " > Tank lighter torpedoed! Armoured support lost!\n"
+			else:
+				phase_report += " > Tank lighter zigzags away from torpedo track!\n"
+	else:
+		if data_manager.q_ship_assignment == "screen":
+			phase_report += "Q-ship patrols report waters clear of enemy submarines.\n"
+		else:
+			phase_report += "No submarine contacts reported during the approach.\n"
+	
+	phase_results.report = phase_report
+	return phase_results
 func resolve_bridgehead_phase(beach_name: String, pontoons_operational: bool, men_count: int, tank_count: int) -> Dictionary:
 	var target_data = data_manager.targets[beach_name]
 	var garrison = target_data.garrison
@@ -449,29 +474,29 @@ func resolve_bridgehead_phase(beach_name: String, pontoons_operational: bool, me
 
 func generate_pontoon_operation_summary() -> String:
 	var report = "=== PONTOON ASSAULT SUMMARY ===\n"
-	
+
 	var total_secured = 0
 	var total_contested = 0
 	var total_failed = 0
 	var total_assault_troops = 0
 	var total_operational_tanks = 0
-	
+
 	for beach_name in data_manager.assignment_order:
 		var status = data_manager.targets[beach_name].get("beach_status", "Unknown")
+		var pontoons_ok = data_manager.targets[beach_name].get("pontoons_operational", false)
 		total_assault_troops += data_manager.targets[beach_name].get("landed_force", 0)
 		total_operational_tanks += data_manager.targets[beach_name].get("operational_tanks", 0)
-		
-		match status:
-			"Secured":
-				total_secured += 1
-			"Contested", "Pinned Down":
-				total_contested += 1
-			"Repulsed", "Failed", "No Landing":
-				total_failed += 1
-	
+
+		if status == "Secured" and pontoons_ok:
+			total_secured += 1
+		elif pontoons_ok:
+			total_contested += 1
+		else:
+			total_failed += 1
+
 	report += "Pontoon Bridge Status: " + str(total_secured) + " operational | " + str(total_contested) + " contested | " + str(total_failed) + " failed\n"
 	report += "Royal Naval Division Ashore: " + str(total_assault_troops) + " men, " + str(total_operational_tanks) + " tanks\n\n"
-	
+
 	if total_secured >= 2:
 		report += "**MULTIPLE BRIDGEHEADS SECURED**: The main force can disembark across multiple pontoon bridges. Excellent prospects for the 1st Division landing.\n"
 	elif total_secured == 1:
@@ -480,5 +505,5 @@ func generate_pontoon_operation_summary() -> String:
 		report += "**CONTESTED PONTOONS**: Some bridges are under fire. Main force disembarkation will be more difficult but still possible.\n"
 	else:
 		report += "**ALL PONTOONS FAILED**: No bridges established. The main force must scale the 30-foot seawall under fire—casualties will be severe.\n"
-	
+
 	return report

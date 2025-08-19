@@ -113,6 +113,8 @@ func _on_choice_made(choice: String):
 			print("Unhandled phase: ", Phases.keys()[current_phase])
 
 func _on_assignment_complete():
+	ui_manager.show_standard_ui()    # <-- Force switch to main UI!
+	print("Assignment complete signal received!")
 	# Immediate: assignments first, now go to bombardment
 	if data_manager.assault_doctrine == "immediate":
 		show_planning_summary()  # leads to Begin Bombardment -> start_bombardment_report_phase()
@@ -335,5 +337,48 @@ func start_main_force_embarkation_phase():
 func start_spy_report_phase():
 	current_phase = Phases.SPY_REPORT
 	ui_manager.set_image("res://assets/break.jpg")
-	ui_manager.display_message("--- FIELD INTELLIGENCE REPORT ---\n\n(Agent reports enemy movements...)")
+	var report = "--- FIELD INTELLIGENCE REPORT ---\n\n"
+	report += "Our spies report the following updated dispositions on the beaches:\n\n"
+	
+	var highest_losses = -1
+	var most_losses_beach = ""
+	var losses_per_beach = {}
+
+	# Compose status for each beach
+	for beach in data_manager.assignment_order:
+		var t = data_manager.targets[beach]
+		var garrison = t.get("garrison", 0)
+		var artillery = t.get("artillery", 0)
+		var landed = t.get("landed_force", 0)
+		var tanks = t.get("operational_tanks", 0)
+		var status = t.get("beach_status", "Unknown")
+		var initial = data_manager.initial_targets_state.get(beach, {})
+		var initial_landed = initial.get("landed_force", landed)
+		var losses = (initial_landed if initial_landed else landed) - landed
+		losses_per_beach[beach] = losses
+		if losses > highest_losses:
+			highest_losses = losses
+			most_losses_beach = beach
+
+		report += "[b]" + beach + "[/b]:\n"
+		report += " • [color=#8e44ad]Garrison:[/color] " + str(garrison)
+		report += " | [color=#c0392b]Artillery:[/color] " + str(artillery) + "\n"
+		report += " • [color=#2980b9]Our Men:[/color] " + str(landed)
+		report += " | [color=#16a085]Tanks:[/color] " + str(tanks) + "\n"
+		report += " • [i]Status:[/i] " + status + "\n\n"
+
+	# Enemy Reinforcement logic
+	var reinforcements_arrive = false
+	if data_manager.threat_level == 1 and randf() < 0.5:
+		reinforcements_arrive = true
+	elif data_manager.threat_level >= 2 and randf() < 0.75:
+		reinforcements_arrive = true
+
+	if reinforcements_arrive and most_losses_beach != "":
+		report += "[b]ALERT![/b] The 199th Division has been sighted reinforcing [b]" + most_losses_beach + "[/b]!\n"
+		var reinf = 2500 # or your chosen number
+		data_manager.targets[most_losses_beach]["garrison"] += reinf
+		report += "An estimated " + str(reinf) + " fresh enemy troops have joined the defense there.\n"
+
+	ui_manager.display_message(report)
 	ui_manager.setup_choices(["Begin Consolidation Phase"])
