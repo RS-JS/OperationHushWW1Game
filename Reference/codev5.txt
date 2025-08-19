@@ -1,0 +1,1500 @@
+extends Control
+
+# --- Node References ---
+# Update your @onready references to match the new structure
+@onready var display_text = $UIContainer/StandardGameUI/ScrollContainer/DisplayText
+@onready var ui_container = $UIContainer
+
+# Standard Game UI references
+@onready var standard_ui = $UIContainer/StandardGameUI
+@onready var choice_image = $UIContainer/StandardGameUI/ChoiceImage
+@onready var choice_container = $UIContainer/StandardGameUI/ChoiceContainer
+@onready var choice_buttons = [
+	$UIContainer/StandardGameUI/ChoiceContainer/ChoiceButton1,
+	$UIContainer/StandardGameUI/ChoiceContainer/ChoiceButton2,
+	$UIContainer/StandardGameUI/ChoiceContainer/ChoiceButton3
+]
+
+# Landing Assignment UI references
+@onready var landing_assignment_ui = $UIContainer/LandingAssignmentUI
+@onready var assignment_title = $UIContainer/LandingAssignmentUI/TitleLabel
+@onready var assignment_confirm = $UIContainer/LandingAssignmentUI/ConfirmButton
+@onready var assignment_container = $UIContainer/LandingAssignmentUI/AssignmentContainer
+# Embarkation UI references (update these paths)
+@onready var embarkation_ui = $UIContainer/EmbarkationUI
+@onready var confirm_button = $UIContainer/EmbarkationUI/ConfirmButton
+@onready var summary_label = $UIContainer/EmbarkationUI/SummaryLabel
+@onready var middelkerke_unit_list = $UIContainer/EmbarkationUI/HBoxContainer/MiddelKerkeColumn/ScrollContainer/MiddelKerkeUnitList
+@onready var westende_unit_list = $UIContainer/EmbarkationUI/HBoxContainer/WestendeColumn/ScrollContainer/WestendeColumnUnitList
+@onready var nieuwpoort_unit_list = $UIContainer/EmbarkationUI/HBoxContainer/NieuwpoortColumn/ScrollContainer/NieuwpoortUnitList
+@onready var middelkerke_stats = $UIContainer/EmbarkationUI/HBoxContainer/MiddelKerkeColumn/MiddelKerkeStats
+@onready var westende_stats = $UIContainer/EmbarkationUI/HBoxContainer/WestendeColumn/WestendeColumnStats
+@onready var nieuwpoort_stats = $UIContainer/EmbarkationUI/HBoxContainer/NieuwpoortColumn/NieuwpoortStats
+
+# UI Management Functions
+enum UIMode {
+	STANDARD,
+	LANDING_ASSIGNMENT,
+	EMBARKATION
+}
+
+# --- Game Constants ---
+const SOLDIERS_PER_MONITOR = 300; const TOTAL_MONITOR = 15
+const TANKS_PER_LIGHTER = 6; const TANK_COMBAT_BONUS = 60
+const TOTAL_REINFORCEMENT_BARGES = 90; const SOLDIERS_PER_BARGE = 200
+const GROUND_ATTACK_BONUS = 150
+
+# --- Game State Variables ---
+enum Phases {
+	START_GAME, INTELLIGENCE_BRIEFING, PLAN_OVERVIEW, NAVAL_SUPPORT_DECISION, NAVAL_SUPPORT_RESOLUTION, NAVAL_BOMBARDMENT_TARGETING_DECISION,ARMOUR_DECISION, BOMBARDMENT_PLAN_DECISION,
+	Q_SHIP_DECISION, TIME_OF_DAY_DECISION, AIR_DOCTRINE_DECISION,
+	PLANNING_SUMMARY, BOMBARDMENT_REPORT, EMBARKATION_ASSIGNMENT, LANDING_ASSIGNMENT, LANDING_REPORT, REINFORCEMENT_ASSIGNMENT,
+	REINFORCEMENT_REPORT, SPY_REPORT,CONSOLIDATION_ASSIGNMENT, CONSOLIDATION_RESOLUTION, FINAL_OUTCOME, FINAL_ROLL_OF_HONOUR
+}
+var current_phase = Phases.START_GAME
+
+# --- Data Structures & Planning Choices ---
+var division_order_of_battle: Array = []
+var naval_support_ships: Array = []
+var targets = {
+	"Middelkerke Bains": {"artillery": 25, "garrison": 4500, "battery_status": "Intact"},
+	"Westende Bains": {"artillery": 20, "garrison": 3500, "battery_status": "Intact"},
+	"Nieuwpoort Bains": {"artillery": 30, "garrison": 6500, "battery_status": "Intact"}
+}
+var monitors = []; var troop_landing_plan = {}; var tank_landing_plan = {}; var reinforcement_plan = {}
+var consolidation_plan = {}
+var landing_assignment_order = ["Middelkerke Bains", "Westende Bains", "Nieuwpoort Bains"]
+var current_assignment_index = 0
+var temp_redeployment_source = ""
+var temp_assignment_value = 0 # For number input UI
+
+var consolidation_turns_total := 3
+var consolidation_turn_current := 1
+var naval_support_choice = "steam"
+var naval_bombardment_target_focus = "split"
+var q_ship_assignment = "none"
+var time_of_day = "day"
+var tanks_chosen = false
+var bombardment_plan = "gunners"
+var air_doctrine = "none"
+var threat_level = 0
+var mustard_gas_used = false
+var time_of_day_effective = "day"
+var morning_mist_failed = false
+var air_doctrine_event = ""
+var rfc_used_this_turn := false
+
+var current_assignment_type = "troops"  # "troops" or "tanks"
+var assignment_values = {}  # Beach name -> number assigned
+
+
+# --- Game Initialization ---
+func _ready():
+	randomize()
+	confirm_button.pressed.connect(_on_choice_made.bind("Confirm Embarkation"))
+	_create_and_apply_theme()
+	await setup_simple_layout()
+	start_new_game()
+
+func start_new_game():
+	populate_monitors()
+	populate_division_structure() 
+	troop_landing_plan.clear(); tank_landing_plan.clear(); reinforcement_plan.clear(); consolidation_plan.clear()
+	threat_level = 0
+	mustard_gas_used = false
+	air_doctrine = "none"
+	start_game_phase()
+
+func populate_monitors():
+	monitors.clear()
+	var monitor_names = [
+		"HMS Erebus", "HMS Terror", "HMS Marshal Soult", "HMS M21", "HMS Sir John Moore",
+		"HMS Lord Clive", "HMS General Craufurd", "HMS Prince Eugene", "HMS Raglan",
+		"HMS General Wolfe", "HMS Prince Rupert", "HMS Sir Thomas Picton",
+		"HMS Abercrombie", "HMS Havelock", "HMS Roberts"
+	]
+	for i in range(TOTAL_MONITOR):
+		monitors.append({"name": monitor_names[i], "carries": "troops", "soldiers": SOLDIERS_PER_MONITOR, "tanks_onboard": 0, "status": "Ready", "assigned_to": ""})
+func populate_division_structure():
+	division_order_of_battle.clear()
+	
+	# --- COLUMN "A" (2nd Brigade) -> Defaults to Middelkerke Bains ---
+	division_order_of_battle.append({"name": "2nd Bde H.Q.", "strength": 100, "id": "2bde_hq", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "2nd Machine Gun Coy.", "strength": 184, "id": "2mg", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "216th Machine Gun Coy.", "strength": 184, "id": "216mg", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "2nd Trench Mortar Bty.", "strength": 65, "id": "2tm", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "1st Northants Regt.", "strength": 751, "id": "1north", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "2nd Sussex Regiment", "strength": 751, "id": "2sussex", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "1st Loyal N. Lancs.", "strength": 751, "id": "1loyal", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "2nd K.R.R. Corps", "strength": 751, "id": "2krr", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "409th Field Coy.", "strength": 197, "id": "409fc", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "1 Coy. 6th Welsh Regt.", "strength": 170, "id": "1coy6w_a", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "No.2 Field Ambulance", "strength": 139, "id": "2fa", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "113th Bty. R.F.A.", "strength": 109, "id": "113rfa", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "13th Cyclist Battn.", "strength": 294, "id": "13cyc", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "12th Motor M.G.Bty.", "strength": 46, "id": "12mmg", "current_dest": "Middelkerke Bains"})
+	division_order_of_battle.append({"name": "Corps Intelligence (A)", "strength": 2, "id": "coint_a", "current_dest": "Middelkerke Bains"})
+	
+	
+	# --- COLUMN "B" (3rd Brigade) -> Defaults to Westende Bains ---
+	division_order_of_battle.append({"name": "3rd Bde H.Qrs.", "strength": 101, "id": "3bde_hq", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "3rd Machine Gun Coy.", "strength": 184, "id": "3mg", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "3rd Trench Mortar Bty.", "strength": 65, "id": "3tm", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "2nd Welsh Regiment", "strength": 751, "id": "2welsh", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "2nd R. Munster Fusrs.", "strength": 751, "id": "2munster", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "1st Bn.Gloster Regt.", "strength": 751, "id": "1gloster_b", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "1st S.Wales Borderers", "strength": 751, "id": "1swb", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "56th Field Coy.", "strength": 197, "id": "56fc", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "1 Coy. 6th Welsh Regt.", "strength": 170, "id": "1coy6w_b", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "No.141 Field Ambulance", "strength": 139, "id": "141fa", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "114th Bty. R.F.A.", "strength": 109, "id": "114rfa", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "R.F.A. & S Coys.", "strength": 2, "id": "rfa_s", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "17th Cyclist Battn.", "strength": 204, "id": "17cyc", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "11th Motor M.G.Bty.", "strength": 46, "id": "11mmg", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "Corps Intelligence (B)", "strength": 2, "id": "coint_b", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "Div.Central Supply Coy.", "strength": 54, "id": "div_supply", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "Divn. Headquarters", "strength": 66, "id": "div_hq", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "Div.L&G.P.s", "strength": 13, "id": "div_lgp", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "25th Rdes.F.A. H.Q.", "strength": 10, "id": "25rfa_hq", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "Divisional Signals", "strength": 115, "id": "div_signals", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "Medical Embarkation Station", "strength": 114, "id": "med_station", "current_dest": "Westende Bains"})
+
+	# --- COLUMN "C" (1st Brigade) -> Defaults to Nieuwpoort Bains ---
+	division_order_of_battle.append({"name": "1st Bde H.Q.", "strength": 100, "id": "1bde_hq", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "1st Machine Gun Coy.", "strength": 184, "id": "1mg", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "1st Trench Mortar Bty.", "strength": 65, "id": "1tm", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "1st Bn. The Black Watch", "strength": 751, "id": "1bw", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "1st Cameron Hdrs.", "strength": 751, "id": "1cameron", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "10th Gloster Regiment", "strength": 751, "id": "10gloster", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "5th Royal Berks Regt.", "strength": 751, "id": "5berks", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "53rd Field Coy.", "strength": 197, "id": "53fc", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "R.E. & S Coys,6th Welsh", "strength": 411, "id": "re_s_welsh", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "No.1 Field Ambulance", "strength": 139, "id": "1fa", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "115th Bty. R.F.A.", "strength": 109, "id": "115rfa", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "1 Coy,17th Cyclist Bn.", "strength": 90, "id": "1coy17cyc", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "14th Motor M.G.Bty.", "strength": 46, "id": "14mmg", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "Corps Intelligence (C)", "strength": 2, "id": "coint_c", "current_dest": "Nieuwpoort Bains"})
+	
+	
+	# Motor Vehicles (distributed across columns as per original)
+
+	division_order_of_battle.append({"name": "Motor Vehicles - Ambulances", "strength": 2, "id": "motor_amb", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "Motor Vehicles - Bus Cars", "strength": 2, "id": "motor_bus", "current_dest": "Nieuwpoort Bains"})
+	division_order_of_battle.append({"name": "Motor Vehicles - Sidecars", "strength": 10, "id": "motor_side", "current_dest": "Westende Bains"})
+	division_order_of_battle.append({"name": "Motor Vehicles - Motor Bicycles", "strength": 13, "id": "motor_bikes", "current_dest": "Nieuwpoort Bains"})
+func setup_choices(options: Array):
+	choice_container.visible = true
+	for i in range(choice_buttons.size()):
+		var button = choice_buttons[i]
+		
+		# Disconnect ALL existing connections to prevent conflicts
+		if button.is_connected("pressed", _on_choice_made):
+			button.disconnect("pressed", _on_choice_made)
+		if button.is_connected("pressed", handle_assignment_input):
+			button.disconnect("pressed", handle_assignment_input)
+
+		# Now, configure the button based on the current options
+		if i < options.size():
+			button.text = options[i]
+			button.visible = true
+			
+			# SPECIAL HANDLING for assignment phases
+			if current_phase == Phases.LANDING_ASSIGNMENT or current_phase == Phases.REINFORCEMENT_ASSIGNMENT:
+				# Connect directly to handle_assignment_input for these phases
+				button.pressed.connect(handle_assignment_input.bind(button.text))
+			else:
+				# Connect the signal and use .bind() to pass the button's current text as an argument.
+				button.pressed.connect(_on_choice_made.bind(button.text))
+		else:
+			button.visible = false
+			
+	if options.is_empty():
+		choice_container.visible = false
+# --- Input Handling ---
+func _on_choice_made(choice: String):
+	# --- THIS IS THE TEST LINE ---
+	print("Button pressed! Choice was '", choice, "' in phase: ", Phases.keys()[current_phase])
+
+	# Route input to the correct handler based on phase type
+	if current_phase == Phases.LANDING_ASSIGNMENT or current_phase == Phases.REINFORCEMENT_ASSIGNMENT:
+		handle_assignment_input(choice)
+		return
+
+	# Standard choice handling for all other phases
+	match current_phase:
+		Phases.START_GAME:
+			start_intelligence_briefing_phase()
+		Phases.INTELLIGENCE_BRIEFING:
+			start_plan_overview_phase()
+		Phases.PLAN_OVERVIEW:
+			start_naval_support_phase()
+		Phases.NAVAL_SUPPORT_DECISION: 
+			process_naval_support_choice(choice)
+		Phases.NAVAL_SUPPORT_RESOLUTION: 
+			start_naval_bombardment_targeting_phase()
+		Phases.NAVAL_BOMBARDMENT_TARGETING_DECISION:
+			process_naval_bombardment_targeting_choice(choice)
+		Phases.ARMOUR_DECISION: 
+			process_armour_choice(choice)
+		Phases.BOMBARDMENT_PLAN_DECISION: 
+			process_bombardment_plan_choice(choice)
+		Phases.Q_SHIP_DECISION: 
+			process_q_ship_choice(choice)
+		Phases.TIME_OF_DAY_DECISION: 
+			process_time_of_day_choice(choice)
+		Phases.AIR_DOCTRINE_DECISION: 
+			process_air_doctrine_choice(choice)
+		Phases.PLANNING_SUMMARY:
+			start_bombardment_report_phase()
+		Phases.BOMBARDMENT_REPORT:
+			start_landing_assignment_phase()
+		Phases.LANDING_REPORT:
+			start_embarkation_assignment_phase()
+		Phases.EMBARKATION_ASSIGNMENT: 
+			resolve_main_force_landing()
+		Phases.REINFORCEMENT_REPORT: 
+			start_spy_report_phase()
+		Phases.SPY_REPORT: 
+			start_consolidation_phase()
+		Phases.CONSOLIDATION_ASSIGNMENT:
+			if temp_redeployment_source != "": 
+				process_redeployment_destination(choice)
+			else: 
+				process_consolidation_choice(choice)
+		Phases.CONSOLIDATION_RESOLUTION:
+			if consolidation_turn_current < consolidation_turns_total: 
+				_advance_to_next_consolidation_turn()
+			else: 
+				determine_final_outcome()
+		Phases.FINAL_OUTCOME: 
+			start_roll_of_honour_phase()
+		Phases.FINAL_ROLL_OF_HONOUR: 
+			setup_choices([]) # Hide buttons at end of game
+func start_game_phase():
+	current_phase = Phases.START_GAME
+	
+	# CHEAT: Skip directly to embarkation for testing
+	# start_embarkation_assignment_phase()
+	# return
+	
+	
+	show_ui(UIMode.STANDARD)  # Simple one-liner!
+	
+	print("After show_ui call") # DEBUG
+
+
+	var tex = load("res://assets/Map.jpeg")
+	choice_image.texture = tex
+	choice_image.visible = true
+	var message = "--- OPERATION HUSH — BRIEFING ---\n\n"
+	message += "For three years, the stalemate on the Western Front has bled the Empire white. Command has sanctioned a bold stroke: an amphibious landing to outflank the German line where it meets the sea.\n\n"
+	message += "The German-held Belgian coast is a dagger pointed at our supply lines. The ports of Zeebrugge and Ostend serve as bases for the U-boats and destroyers that plague our shipping...\n\n"
+	message += "Your objectives are twofold:\n • Objective 1: Seize the designated beachheads.\n • Objective 2: Neutralise the enemy batteries to enable a general advance from the Ypres Salient.\n\n"
+	message += "The success of the entire Third Battle of Ypres may rest on your decisions."
+	
+	display_text.text = message
+	setup_choices(["View Intelligence Briefing"])
+	
+
+func start_intelligence_briefing_phase():
+	current_phase = Phases.INTELLIGENCE_BRIEFING
+	var tex = load("res://assets/MataHari.jpg")
+	choice_image.texture = tex
+	choice_image.visible = true
+	var message = "--- INTELLIGENCE BRIEFING ---\n\n"
+	message += "The three landing sites have been chosen for their strategic value:\n"
+	message += " • Middelkerke Bains: 1.75 miles behind the German Third line.\n"
+	message += " • Westende Bains: 1 mile behind the German Second line.\n"
+	message += " • Nieuwpoort Bains: 0.75 miles behind the German Second Line.\n\n"
+	message += "ENEMY DISPOSITIONS:\n"
+	message += "The sector is held by the 3rd German Marine Korps Flandern. The 199th Division is held as a mobile reserve.\n\n"
+	# Calculate and display the strength for each target based on the new formula
+	var m_art = targets["Middelkerke Bains"]["artillery"]
+	var m_gar = targets["Middelkerke Bains"]["garrison"]
+	var m_strength = (m_art * 200) + m_gar
+	message += " > Middelkerke ('Raversyde'): " + str(m_art) + " guns, " + str(m_gar) + " men. (Total Strength: " + str(m_strength) + ")\n"
+
+	var w_art = targets["Westende Bains"]["artillery"]
+	var w_gar = targets["Westende Bains"]["garrison"]
+	var w_strength = (w_art * 200) + w_gar
+	message += " > Westende: " + str(w_art) + " guns, " + str(w_gar) + " men. (Total Strength: " + str(w_strength) + ")\n"
+	
+	var n_art = targets["Nieuwpoort Bains"]["artillery"]
+	var n_gar = targets["Nieuwpoort Bains"]["garrison"]
+	var n_strength = (n_art * 200) + n_gar
+	message += " > Nieuwpoort: " + str(n_art) + " guns, " + str(n_gar) + " men. (Total Strength: " + str(n_strength) + ")\n\n"
+
+	message += "TERRAIN ANALYSIS:\n"
+	message += "A 30-foot seawall lines the coast. The immediate vicinity consists of sand dunes where the garrisons and artillery are well dug-in, favouring the defenders. Some areas have also been deliberately flooded."
+
+	display_text.text = message
+	setup_choices(["View Operation Plan"])
+	
+# CHANGE 2: New function for the plan overview phase.
+func start_plan_overview_phase():
+	current_phase = Phases.PLAN_OVERVIEW
+	var tex = load("res://assets/prepare.jpeg")
+	choice_image.texture = tex
+	choice_image.visible = true
+	var message = "--- OPERATION PLAN & OBJECTIVES ---\n\n"
+	message += "14,000 men of the 1st Division have been preparing for this assault in great secrecy at a replica facility in Dunkirk, codenamed 'Hush Island', practicing both day and night assaults.\n\n"
+	message += "The operation will consist of the following stages:\n"
+	message += "1. Naval ship-to-shore bombardment to weaken defensive positions.\n"
+	message += "2. The Royal Naval Division, transported by monitors, will land and secure beachheads. Specially built pontoons will be moved to the sea wall, allowing the main 1st Division force to disembark under cover of a smoke screen.\n"
+	message += "3. The invasion force must consolidate its positions, eliminating enemy artillery and garrisons.\n"
+	message += "4. Breakout from the beaches to secure inland bridges and await link-up with General Rawlinson's 5th Corps.\n\n"
+	message += "--- VICTORY CONDITION ---\n"
+	message += "The complete elimination of all three enemy batteries and the routing of all three garrisons."
+
+	display_text.text = message
+	setup_choices(["Begin Planning"])
+func start_naval_support_phase():
+	current_phase = Phases.NAVAL_SUPPORT_DECISION
+	var tex = load("res://assets/warspite.jpg")
+	choice_image.texture = tex
+	choice_image.visible = true
+	
+	var message = "--- STEP 1: NAVAL SUPPORT ---\n\n"
+	message += "The Dover Patrol will provide the initial coastal barrage using a number of their obsolete Tribal-class destroyers.\n\n"
+	message += "These are old, steam-powered ships armed with 12-pounder guns. Their advantage is that they are already in position, and the Germans are accustomed to their presence off the coast.\n\n"
+	message += "You could, however, petition the Admiralty for the use of the latest Queen Elizabeth-class Dreadnoughts. Their 15-inch guns offer vastly superior accuracy. Be warned: they are currently in Scapa Flow. Moving these capital ships will delay the operation, alert the enemy, and there is no guarantee the Admiralty will approve the request."
+	
+	display_text.text = message
+	
+	setup_choices(["Rely on the Dover Patrol", "Petition for Dreadnoughts"])
+func process_naval_support_choice(choice):
+	if choice == "Rely on the Dover Patrol":
+		naval_support_choice = "destroyers"
+		naval_support_ships = [
+			{"name": "HMS Afridi", "class": "tribal", "status": "Ready"},
+			{"name": "HMS Cossack", "class": "tribal", "status": "Ready"},
+			{"name": "HMS Mohawk", "class": "tribal", "status": "Ready"},
+			{"name": "HMS Tartar", "class": "tribal", "status": "Ready"}
+		]
+	elif choice == "Petition for Dreadnoughts":
+		# Chance of approval is now 50/50
+		if randf() < 0.5:
+			# On success, you get the better ships but at a cost.
+			naval_support_choice = "dreadnought_success"
+			threat_level += 2
+			naval_support_ships = [
+				{"name": "HMS Warspite", "class": "qe", "status": "Ready"},
+				{"name": "HMS Barham", "class": "qe", "status": "Ready"}
+			]
+		else:
+			# On failure, the petition is denied, and you fall back to the destroyers.
+			naval_support_choice = "dreadnought_failure"
+			naval_support_ships = [
+				{"name": "HMS Afridi", "class": "tribal", "status": "Ready"},
+				{"name": "HMS Cossack", "class": "tribal", "status": "Ready"},
+				{"name": "HMS Mohawk", "class": "tribal", "status": "Ready"},
+				{"name": "HMS Tartar", "class": "tribal", "status": "Ready"}
+			]
+			
+	start_naval_support_resolution_phase()
+func start_naval_support_resolution_phase():
+	current_phase = Phases.NAVAL_SUPPORT_RESOLUTION
+	var tex = load("res://assets/Jelly.png")
+	choice_image.texture = tex
+	choice_image.visible = true
+	var message = ""
+	
+	if naval_support_choice == "dreadnought_success":
+		message += "A dispatch arrives, heavy with the gravity of its decision. It reads:\n'REQUEST GRANTED. BE ADVISED, THE ABSENCE OF WARSPITE AND BARHAM FROM THE GRAND FLEET PRESENTS A GRAVE STRATEGIC VULNERABILITY. THIS OPERATION MUST YIELD RESULTS COMMENSURATE WITH THE RISK I HAVE UNDERTAKEN. DO NOT FAIL. - JELLICOE'\n"
+	elif naval_support_choice == "dreadnought_failure":
+		message += "A curt dispatch arrives from the Admiralty. It reads:\n'REFERENCE YOUR REQUEST FOR CAPITAL SHIPS. UNACCEPTABLE RISK. THE GRAND FLEET'S STRENGTH MUST BE PRESERVED AT ALL COSTS TO COUNTER THE HIGH SEAS FLEET. YOU WILL MAKE DO WITH THE ASSETS ALLOCATED. - JELLICOE'\n"
+	else: # This covers the "destroyers" choice
+		message += "Admiralty signals confirmation. The assets of the Dover Patrol are deemed sufficient for the task. Proceed as planned.\n"
+		
+	message += "\nThe following ships are assigned to the bombardment force:\n"
+	for ship in naval_support_ships:
+		message += " > " + ship["name"] + "\n"
+		
+	display_text.text = message
+	setup_choices(["Set Targeting Priority"])
+func start_naval_bombardment_targeting_phase():
+	current_phase = Phases.NAVAL_BOMBARDMENT_TARGETING_DECISION
+	var tex = load("res://assets/target.jpeg")
+	choice_image.texture = tex
+	choice_image.visible = true
+	var message = "--- STEP 2: BOMBARDMENT TARGETING ---\n\n"
+	message += "The bombardment is the critical first step. The fleet's gunnery officers await your targeting doctrine.\n\n"
+	message += "Your choice will determine the focus of the barrage:\n"
+	message += " • Target the Batteries: Prioritise silencing the heavy guns that threaten our landing flotillas.\n"
+	message += " • Target the Garrisons: Prioritise decimating the infantry in their trenches to aid our assaulting troops.\n\n"
+	message += "What is the fleet's priority?"
+	
+	display_text.text = message
+	setup_choices(["Focus on Batteries", "Focus on Garrisons", "Split Fire"])
+func process_naval_bombardment_targeting_choice(choice):
+	if choice == "Focus on Batteries":
+		naval_bombardment_target_focus = "batteries"
+	elif choice == "Focus on Garrisons":
+		naval_bombardment_target_focus = "garrison"
+	elif choice == "Split Fire":
+		naval_bombardment_target_focus = "split"
+	
+	start_bombardment_plan_phase()	
+func start_armour_phase():
+	current_phase = Phases.ARMOUR_DECISION
+	var tex = load("res://assets/HAig.png")
+	choice_image.texture = tex
+	choice_image.visible = true
+	
+	# This line now dynamically counts the remaining troop monitors for accurate text.
+	var troop_monitors_count = monitors.filter(func(m): return m["carries"] == "troops").size()
+	
+	var message = "--- STEP 5: ARMOURED SUPPORT ---\n\n"
+	message += "Field Marshal Haig has burst in, demanding that tanks be included in the assault.\n\n"
+	message += "This would involve converting three of your " + str(troop_monitors_count) + " available troop-carrying monitors into specialist tank lighters, removing their initial infantry capacity entirely."
+	
+	display_text.text = message
+	setup_choices(["Reject Haig's Plan", "Approve Haig's Plan"])
+func process_armour_choice(choice):
+	if choice == "1":
+		tanks_chosen = false
+	elif choice == "2":
+		tanks_chosen = true
+		refit_monitors_for_tanks()
+	start_time_of_day_phase()
+
+func start_bombardment_plan_phase():
+	current_phase = Phases.BOMBARDMENT_PLAN_DECISION
+	var tex = load("res://assets/baloon.jpg")
+	choice_image.texture = tex
+	choice_image.visible = true
+	var message = "--- STEP 3: BOMBARDMENT METHOD ---\n\n"
+	message += "The Dover Patrol has fifteen monitors assigned to support the mission. Six are reserved for landing the enormous pontoons, leaving nine available for close support.\n\n"
+	message += "The RNAS, however, would like to requisition one of these nine to carry an observation balloon. This would provide the fleet with live feedback on hits and misses, potentially increasing the barrage's accuracy.\n\n"
+	message += "Separately, Admiral Bacon has a radical idea: use two monitors as static 'islands'. This would give the gunners a fixed point of reference, allowing them to triangulate their fire—a high-risk gamble with the potential for devastating accuracy.\n\n"
+	message += "Or, you can simply trust the gunners, freeing up all nine monitors for their primary support role."
+	
+	display_text.text = message
+	setup_choices(["RNAS Balloon (Cost: 1 Monitor)", "Bacon's 'Islands' (Cost: 2 Monitors)", "Trust the Gunners (Cost: 0)"])
+func process_bombardment_plan_choice(choice):
+	var cost = 0
+	if choice == "RNAS Balloon (Cost: 1 Monitor)": 
+		bombardment_plan = "balloons"
+		cost = 1
+	elif choice == "Bacon's 'Islands' (Cost: 2 Monitors)": 
+		bombardment_plan = "bacon"
+		cost = 2
+	elif choice == "Trust the Gunners (Cost: 0)": 
+		bombardment_plan = "gunners"
+	
+	apply_monitor_costs(cost)
+	
+
+	start_q_ship_phase()
+
+func start_q_ship_phase():
+	current_phase = Phases.Q_SHIP_DECISION
+	var tex = load("res://assets/qSHip.jpg")
+	choice_image.texture = tex
+	choice_image.visible = true
+	display_text.text = "--- STEP 4: SUBMARINE DEFENCE ---\n\nU‑boats are active in the sector. Q‑Ships can be deployed to screen either the fire‑support fleet or the landing flotillas. Their presence will likely put the enemy on alert.\n\nYour choice:"
+	setup_choices(["Screen Fire Support", "Screen Landing Force", "No Q-Ships"])
+
+func process_q_ship_choice(choice):
+	if choice == "Screen Fire Support": 
+		q_ship_assignment = "fleet"
+		threat_level += 1 # Deploying Q-ships increases enemy alertness
+	elif choice == "Screen Landing Force": 
+		q_ship_assignment = "screen"
+		threat_level += 1 # Deploying Q-ships increases enemy alertness
+	elif choice == "No Q-Ships": 
+		q_ship_assignment = "none"
+		# No change to threat level if no ships are deployed
+	
+	# Flow now proceeds to the Armour decision phase.
+	start_armour_phase()
+
+func start_time_of_day_phase():
+	current_phase = Phases.TIME_OF_DAY_DECISION
+	# Text updated from Step 5 to Step 6
+	display_text.text = "--- STEP 6: H-HOUR ---\n\nChoose the timing of the assault carefully:\n\n • Night: Cloaks approach, but treacherous ranging.\n • Morning: Mist veils flotillas, but can fail.\n • Daylight: Perfect visibility for both sides."
+	setup_choices(["Night Assault", "Morning Landings", "Daylight Assault"])
+func process_time_of_day_choice(choice):
+	if choice == "1": time_of_day = "night"
+	elif choice == "2": time_of_day = "morning"
+	elif choice == "3": time_of_day = "day"
+	start_air_doctrine_phase()
+
+func start_air_doctrine_phase():
+	current_phase = Phases.AIR_DOCTRINE_DECISION
+	var tex = load("res://assets/Flashheart.jpeg")
+	choice_image.texture = tex
+	choice_image.visible = true
+	display_text.text = "--- STEP 7: AIR DOCTRINE ---\n\nThe Royal Flying Corps is eager to help. Where do you want them?\n\n • Air Reconnaissance: Estimate enemy strength.\n • Ground Attack: Strafe trenches and gun-pits."
+	setup_choices(["Air Reconnaissance", "Ground Attack"])
+
+func process_air_doctrine_choice(choice):
+	if choice == "1": air_doctrine = "recon"
+	elif choice == "2": air_doctrine = "ground_attack"
+	show_planning_summary()
+func show_ui(mode: UIMode):
+	# Hide all UIs first
+	standard_ui.visible = false
+	landing_assignment_ui.visible = false
+	embarkation_ui.visible = false
+	
+	# Show the requested UI
+	match mode:
+		UIMode.STANDARD:
+			standard_ui.visible = true
+		UIMode.LANDING_ASSIGNMENT:
+			landing_assignment_ui.visible = true
+		UIMode.EMBARKATION:
+			embarkation_ui.visible = true
+func show_planning_summary():
+	current_phase = Phases.PLANNING_SUMMARY
+	var troop_monitors_count = monitors.filter(func(m): return m["carries"] == "troops").size()
+	var tank_lighters_count  = monitors.filter(func(m): return m["carries"] == "tanks").size()
+	var message = "--- OPERATION PLAN FINALIZED ---\n\n"
+	message += "Naval Support: " + naval_support_choice.capitalize() + "s\n"
+	message += "Bombardment Focus: " + naval_bombardment_target_focus.capitalize() + "\n"
+	message += "Bombardment Plan: " + bombardment_plan.capitalize() + "\n"
+	message += "Air Doctrine: " + air_doctrine.replace("_", " ").capitalize() + "\n"
+	message += "H-Hour: " + time_of_day.capitalize() + "\n"
+	var u_line = "U-Boat Defence: "
+	u_line += "None" if q_ship_assignment == "none" else "Screen " + q_ship_assignment.capitalize()
+	message += u_line + "\n\n"
+	message += "Your available landing force is:\n"
+	message += " > " + str(troop_monitors_count) + " Troop Monitors (" + str(SOLDIERS_PER_MONITOR) + " each = " + str(troop_monitors_count * SOLDIERS_PER_MONITOR) + " men)\n"
+	message += " > " + str(tank_lighters_count) + " Tank Lighters\n\n"
+	message += "Reserve (at sea):\n"
+	message += " > " + str(TOTAL_REINFORCEMENT_BARGES) + " Trawlers (" + str(SOLDIERS_PER_BARGE) + " each = " + str(TOTAL_REINFORCEMENT_BARGES * SOLDIERS_PER_BARGE) + " men)\n\n"
+	message += "Current Threat Level: " + str(threat_level) + "\n\n"
+	message += "Press Confirm to execute bombardment."
+	display_text.text = message
+	setup_choices(["Begin Bombardment"])
+
+# --- ASSIGNMENT & RESOLUTION PHASES ---
+func start_bombardment_report_phase():
+	current_phase = Phases.BOMBARDMENT_REPORT
+	var tex = load("res://assets/MataHari.jpg")
+	choice_image.texture = tex
+	choice_image.visible = true
+	
+	var report = "--- BOMBARDMENT REPORT ---\n\n"
+	report += "The pre-dawn gloom is shattered as the fleet opens fire. Mile-long flashes of cordite illuminate the ships, followed seconds later by the earth-shaking arrival of the shells on the coast. The Belgian shore disappears behind a wall of smoke, seawater, and pulverised earth.\n"
+	
+	# Add dramatic submarine contact text
+	report += _fleet_sub_contact_lines(_get_active_fire_support())
+	
+	# Add observation report that changes based on the chosen method
+	var observation_report = ""
+	if bombardment_plan == "gunners":
+		observation_report = "\nLookouts squint, trying to pierce the gloom. Without clear observation, the gunnery officer offers a conservative damage estimate, trusting the methodical bracketing of his gun crews.\n"
+	elif bombardment_plan == "balloons":
+		observation_report = "\nA signal lamp winks from the RNAS observation balloon, high above the chaos. 'OBSERVING... MULTIPLE... DIRECT HITS ON EMPLACEMENTS... REPEATING... DIRECT HITS...'\n"
+	elif bombardment_plan == "bacon":
+		observation_report = "\nThe radio crackles with a frantic report from the forward observers on Bacon's static monitors. Their unprecedented proximity allows for terrifyingly precise corrections. 'They're walking the shells right into the trenches! God save the poor souls in there...'\n"
+	report += observation_report
+
+	report += "\nFinal Damage Assessment:\n"
+	
+	# Loop through each target to calculate and report damage
+	for target_name in targets.keys():
+		var t = targets[target_name]
+		
+		# Store pre-bombardment stats
+		var pre_art = t["artillery"]
+		var pre_gar = t["garrison"]
+		var initial_strength = (pre_art * 200) + pre_gar
+		
+		# Run the bombardment calculation
+		bombard_target(target_name)
+		
+		# Calculate post-bombardment strength
+		var post_art = targets[target_name]["artillery"]
+		var post_gar = targets[target_name]["garrison"]
+		var final_strength = (post_art * 200) + post_gar
+		
+		var strength_reduction = initial_strength - final_strength
+		
+		# Format the new report string
+		report += "\n > " + target_name + ":\n"
+		report += "   Initial: " + str(pre_art) + " guns, " + str(pre_gar) + " garrison.\n"
+		report += "   Remaining: " + str(post_art) + " guns, " + str(post_gar) + " garrison.\n"
+		report += "   Combat Strength Reduction: " + str(strength_reduction)
+
+	display_text.text = report
+	setup_choices(["Proceed to Landing Assignments"])
+func start_landing_assignment_phase():
+	current_phase = Phases.LANDING_ASSIGNMENT
+	show_ui(UIMode.LANDING_ASSIGNMENT)  # Simple switch!
+	troop_landing_plan.clear()
+	tank_landing_plan.clear()
+	
+	# Hide other UI elements and show landing assignment UI
+	choice_container.visible = false
+	choice_image.visible = false
+	embarkation_ui.visible = false
+	landing_assignment_ui.visible = true
+	
+	# Start with tanks if available, otherwise troops
+	current_assignment_type = "tanks" if tanks_chosen else "troops"
+	assignment_values.clear()
+	
+	# Initialize assignment values to 0 for all beaches
+	for beach in landing_assignment_order:
+		assignment_values[beach] = 0
+	
+	setup_landing_assignment_ui()
+func setup_landing_assignment_ui():
+	var total_units = monitors.filter(func(m): return m["carries"] == current_assignment_type).size()
+	var unit_name = "Tank Lighters" if current_assignment_type == "tanks" else "Troop Monitors"
+	
+	# Set title
+	assignment_title.text = "ASSIGN " + unit_name.to_upper() + " TO BEACHES"
+	
+	# Clear existing assignment controls
+	for child in assignment_container.get_children():
+		child.queue_free()
+	
+	# Wait a frame for the children to be properly removed
+	await get_tree().process_frame
+	
+	# Add summary info
+	var summary_label = Label.new()
+	var assigned_total = 0
+	for beach in assignment_values:
+		assigned_total += assignment_values[beach]
+	summary_label.text = "Available: " + str(total_units) + " | Assigned: " + str(assigned_total) + " | Remaining: " + str(total_units - assigned_total)
+	summary_label.add_theme_color_override("font_color", Color("6631df"))
+	assignment_container.add_child(summary_label)
+	
+	# Add spacing
+	var spacer1 = Control.new()
+	spacer1.custom_minimum_size = Vector2(0, 20)
+	assignment_container.add_child(spacer1)
+	
+	# Create assignment controls for each beach
+	for beach_name in landing_assignment_order:
+		create_beach_assignment_row(beach_name, total_units, assigned_total)
+	
+	# Add spacing before confirm button
+	var spacer2 = Control.new()
+	spacer2.custom_minimum_size = Vector2(0, 30)
+	assignment_container.add_child(spacer2)
+	
+	# Configure confirm button
+	assignment_confirm.text = "Confirm Assignment"
+	if not assignment_confirm.is_connected("pressed", _on_assignment_confirm):
+		assignment_confirm.pressed.connect(_on_assignment_confirm)
+func create_beach_assignment_row(beach_name: String, total_units: int, assigned_total: int):
+	# Beach label
+	var beach_label = Label.new()
+	beach_label.text = beach_name
+	beach_label.add_theme_color_override("font_color", Color("6631df"))
+	beach_label.custom_minimum_size = Vector2(0, 30)
+	assignment_container.add_child(beach_label)
+	
+	# Assignment row with -/+/value
+	var assignment_row = HBoxContainer.new()
+	assignment_row.custom_minimum_size = Vector2(0, 50)
+	
+	# Minus button
+	var minus_btn = Button.new()
+	minus_btn.text = "➖"
+	minus_btn.custom_minimum_size = Vector2(60, 40)
+	minus_btn.pressed.connect(_on_assignment_change.bind(beach_name, -1))
+	assignment_row.add_child(minus_btn)
+	
+	# Value label
+	var value_label = Label.new()
+	value_label.text = str(assignment_values.get(beach_name, 0))
+	value_label.custom_minimum_size = Vector2(80, 40)
+	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	value_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	value_label.add_theme_color_override("font_color", Color("6631df"))
+	assignment_row.add_child(value_label)
+	
+	# Plus button
+	var plus_btn = Button.new()
+	plus_btn.text = "➕"
+	plus_btn.custom_minimum_size = Vector2(60, 40)
+	plus_btn.pressed.connect(_on_assignment_change.bind(beach_name, 1))
+	assignment_row.add_child(plus_btn)
+	
+	assignment_container.add_child(assignment_row)
+
+func _on_assignment_change(beach_name: String, change: int):
+	var total_units = monitors.filter(func(m): return m["carries"] == current_assignment_type).size()
+	var total_assigned = 0
+	for beach in assignment_values:
+		total_assigned += assignment_values[beach]
+	
+	var new_value = assignment_values[beach_name] + change
+	
+	# Validate the change
+	if new_value < 0:
+		return
+	if change > 0 and total_assigned >= total_units:
+		return
+		
+	# Apply the change
+	assignment_values[beach_name] = new_value
+	
+	# Refresh the display
+	setup_landing_assignment_ui()
+
+func _on_assignment_confirm():
+	# Save current assignments
+	if current_assignment_type == "tanks":
+		tank_landing_plan = assignment_values.duplicate()
+		# If we have troops to assign next, switch to troops
+		if monitors.filter(func(m): return m["carries"] == "troops").size() > 0:
+			current_assignment_type = "troops"
+			assignment_values.clear()
+			for beach in landing_assignment_order:
+				assignment_values[beach] = 0
+			setup_landing_assignment_ui()
+			return
+	else:
+		troop_landing_plan = assignment_values.duplicate()
+	
+	# All assignments complete, proceed to next phase
+	show_ui(UIMode.STANDARD)
+	resolve_landings()
+func ask_for_next_assignment(type):
+	temp_assignment_value = 0
+	var total_vessels = monitors.filter(func(m): return m["carries"] == type).size()
+	var plan = tank_landing_plan if type == "tanks" else troop_landing_plan
+	var vessel_name = "Tank Lighters" if type == "tanks" else "Troop Monitors"
+	var assigned = 0
+	for beach in plan: assigned += plan[beach]
+	var remaining = total_vessels - assigned
+	var current_beach = landing_assignment_order[current_assignment_index]
+	var message = "--- " + vessel_name.to_upper() + " ASSIGNMENT ---\n\n"
+	message += "You have " + str(remaining) + " " + vessel_name + " remaining.\n"
+	message += "Assign to " + current_beach + ":\n\n"
+	message += "         " + str(temp_assignment_value) + "         \n"
+	display_text.text = message
+	setup_choices(["➖", "➕", "Assign"])
+
+func process_landing_assignment(player_input):
+	var type = "troops"
+	if tanks_chosen and not tank_landing_plan.has(landing_assignment_order.back()): type = "tanks"
+	var plan = tank_landing_plan if type == "tanks" else troop_landing_plan
+	var num_assigned = int(player_input)
+	var current_beach = landing_assignment_order[current_assignment_index]
+	plan[current_beach] = num_assigned
+	current_assignment_index += 1
+	var assigned_so_far = 0
+	for beach in plan: assigned_so_far += plan[beach]
+	var total_vessels = monitors.filter(func(m): return m["carries"] == type).size()
+	if assigned_so_far >= total_vessels or current_assignment_index >= landing_assignment_order.size():
+		var remaining = total_vessels - assigned_so_far
+		if current_assignment_index < landing_assignment_order.size():
+			plan[landing_assignment_order[current_assignment_index]] = remaining
+		while current_assignment_index < landing_assignment_order.size():
+			if not plan.has(landing_assignment_order[current_assignment_index]):
+				plan[landing_assignment_order[current_assignment_index]] = 0
+			current_assignment_index += 1
+		if type == "tanks":
+			current_assignment_index = 0
+			ask_for_next_assignment("troops")
+		else:
+			resolve_landings()
+	else:
+		ask_for_next_assignment(type)
+
+func resolve_landings(): # This now resolves the INITIAL monitor/tank landing
+	current_phase = Phases.LANDING_REPORT
+	var tex = load("res://assets/landing.jpeg") # Use a suitable image
+	choice_image.texture = tex
+	choice_image.visible = true
+	show_ui(UIMode.STANDARD) # Make sure we're showing the standard UI
+
+	var report = "--- INITIAL LANDING REPORT ---\n\n"
+	report += "Through the pre-dawn gloom, the monitors surge towards the Belgian coast. Searchlights sweep the waters as German machine guns chatter from concealed positions. Under a hail of covering fire from the Royal NAval Divsion, the massive pontoon bridges are thrust against the thirty-foot sea wall.\n\n"
+
+	# Loop through each beach to resolve the first wave
+	for beach in landing_assignment_order:
+		var target_data = targets[beach]
+		var enemy_strength = (target_data.artillery * 100) + target_data.garrison # Simplified strength for this phase
+		
+		var monitors_assigned = troop_landing_plan.get(beach, 0)
+		var tanks_assigned = tank_landing_plan.get(beach, 0)
+		
+		var attacker_strength = (monitors_assigned * SOLDIERS_PER_MONITOR) + (tanks_assigned * TANK_COMBAT_BONUS)
+		
+		report += " > " + beach + ":\n"
+		
+		# Determine outcome and set a status
+		if attacker_strength > enemy_strength * 0.75:
+			target_data["beach_status"] = "Secured"
+			report += "   The pontoons crash home against the concrete! Engineers swarm ashore as German defenders retreat in disorder from the promenade.\n"
+		elif attacker_strength > enemy_strength * 0.3:
+			target_data["beach_status"] = "Contested"
+			report += "   Desperate fighting rages on the sea wall! Our pontoons are in place but under murderous enfilade fire from concealed positions.\n"
+		else:
+			target_data["beach_status"] = "Repulsed"
+			report += "   Catastrophe! Withering defensive fire has shattered the pontoon assault. The survivors cling to the wreckage as monitors attempt withdrawal.\n"
+			
+		# Store the initial landed force for later phases
+		target_data["landed_force"] = monitors_assigned * SOLDIERS_PER_MONITOR
+		target_data["operational_tanks"] = tanks_assigned # Simplified for now
+
+	display_text.text = report
+	setup_choices(["Prepare Main Force Embarkation"])
+func resolve_main_force_landing():
+	current_phase = Phases.REINFORCEMENT_REPORT # We can reuse this phase name or make a new one
+	
+	embarkation_ui.visible = false
+	choice_image.visible = true
+	
+	# Calculate the main force strength for each beach from the division data
+	var main_force_strength = {
+		"Middelkerke Bains": 0,
+		"Westende Bains": 0,
+		"Nieuwpoort Bains": 0
+	}
+	
+	for unit in division_order_of_battle:
+		main_force_strength[unit.current_dest] += unit.strength
+		
+	var report = "--- MAIN FORCE LANDING REPORT ---\n\n"
+	report += "Following the initial assault, the main body of the 1st Division comes ashore via the pontoons, reinforcing the beachheads.\n\n"
+	
+	# Add the main force to the existing landed force
+	for beach in landing_assignment_order:
+		targets[beach].landed_force += main_force_strength[beach]
+		report += " > " + beach + " has been reinforced with " + str(main_force_strength[beach]) + " men.\n"
+		
+	display_text.text = report
+	setup_choices(["View Intelligence Report"]) # Flow into the next part of the game
+func start_reinforcement_assignment_phase():
+	current_phase = Phases.REINFORCEMENT_ASSIGNMENT
+	current_assignment_index = 0
+	reinforcement_plan = {}
+	ask_for_next_reinforcement_assignment()
+
+func ask_for_next_reinforcement_assignment():
+	temp_assignment_value = 0
+	var assigned = 0
+	for beach in reinforcement_plan: assigned += reinforcement_plan[beach]
+	var remaining = TOTAL_REINFORCEMENT_BARGES - assigned
+	var current_beach = landing_assignment_order[current_assignment_index]
+	var message = "--- REINFORCEMENT PHASE ---\n\n"
+	for beach_name in landing_assignment_order:
+		message += " > " + beach_name + ": " + targets[beach_name].get("beach_status", "Unknown") + "\n"
+	message += "\nYou have " + str(remaining) + " trawlers remaining.\n"
+	message += "Assign to " + current_beach + ":\n\n"
+	message += "         " + str(temp_assignment_value) + "         \n"
+	display_text.text = message
+	setup_choices(["➖", "➕", "Assign"])
+
+func process_reinforcement_assignment(player_input):
+	var num = int(player_input)
+	var current_beach = landing_assignment_order[current_assignment_index]
+	reinforcement_plan[current_beach] = num
+	current_assignment_index += 1
+	var assigned_so_far = 0
+	for beach in reinforcement_plan: assigned_so_far += reinforcement_plan[beach]
+	var remaining = TOTAL_REINFORCEMENT_BARGES - assigned_so_far
+	if current_assignment_index >= landing_assignment_order.size() - 1:
+		reinforcement_plan[landing_assignment_order.back()] = remaining
+		resolve_reinforcements()
+	else:
+		ask_for_next_reinforcement_assignment()
+
+func resolve_reinforcements():
+	current_phase = Phases.REINFORCEMENT_REPORT
+	# (Your full reinforcement logic is assumed here)
+	display_text.text = "--- REINFORCEMENT ACTION REPORT ---\n\n(Reinforcements are landing...)"
+	setup_choices(["View Intelligence Report"])
+
+func start_spy_report_phase():
+	current_phase = Phases.SPY_REPORT
+	var tex = load("res://assets/break.jpg")
+	choice_image.texture = tex
+	choice_image.visible = true
+	# (Your spy report logic here)
+	display_text.text = "--- FIELD INTELLIGENCE REPORT ---\n\n(Agent reports enemy movements...)"
+	setup_choices(["Begin Consolidation Phase"])
+
+func start_consolidation_phase():
+	current_phase = Phases.CONSOLIDATION_ASSIGNMENT
+	consolidation_turn_current = 1
+	current_assignment_index = 0
+	consolidation_plan.clear()
+	rfc_used_this_turn = false
+	ask_for_next_consolidation_order()
+
+func ask_for_next_consolidation_order():
+	var current_beach = landing_assignment_order[current_assignment_index]
+	var beach_data = targets[current_beach]
+	var status = beach_data.get("beach_status", "No Landing")
+	var message = "--- CONSOLIDATION — TURN " + str(consolidation_turn_current) + " ---\n\n"
+	message += "Orders for " + current_beach + " (Status: " + status + ")\n"
+	message += "Landed Force: ~" + str(beach_data.get("landed_force", 0)) + " men, " + str(beach_data.get("operational_tanks", 0)) + " tanks.\n"
+	display_text.text = message
+	if status == "Secured" or status == "Dominant":
+		setup_choices(["Assault Battery", "Naval Support", "Push Inland"])
+	elif status == "Pinned Down":
+		setup_choices(["Assault (Desperate)", "Naval Support", "Dig In"])
+	else:
+		setup_choices(["Do Nothing"])
+
+func process_consolidation_choice(choice):
+	var current_beach = landing_assignment_order[current_assignment_index]
+	var status = targets[current_beach].get("beach_status", "No Landing")
+	var action = ""
+	if status == "Secured" or status == "Dominant":
+		if choice == "1": action = "assault_battery"
+		elif choice == "2": action = "naval_support"
+		elif choice == "3": action = "push_inland"
+	elif status == "Pinned Down":
+		if choice == "1": action = "assault_battery"
+		elif choice == "2": action = "naval_support"
+		elif choice == "3": action = "dig_in"
+	else:
+		action = "dig_in"
+	consolidation_plan[current_beach] = {"action": action}
+	current_assignment_index += 1
+	if current_assignment_index < landing_assignment_order.size():
+		ask_for_next_consolidation_order()
+	else:
+		resolve_consolidation_turn()
+
+func resolve_consolidation_turn():
+	current_phase = Phases.CONSOLIDATION_RESOLUTION
+	# (Your consolidation logic here)
+	var report = "--- CONSOLIDATION TURN " + str(consolidation_turn_current) + " REPORT ---\n\n(Player and enemy actions are resolved...)"
+	display_text.text = report
+	if consolidation_turn_current < consolidation_turns_total:
+		setup_choices(["Plan Next Turn (" + str(consolidation_turn_current + 1) + ")"])
+	else:
+		setup_choices(["See Final Outcome"])
+
+func determine_final_outcome():
+	current_phase = Phases.FINAL_OUTCOME
+	# (Your final outcome logic here)
+	display_text.text = "--- FINAL OPERATION OUTCOME ---\n\n(Victory or Stalemate...)"
+	setup_choices(["View Roll of Honour"])
+
+func start_roll_of_honour_phase():
+	current_phase = Phases.FINAL_ROLL_OF_HONOUR
+	# (Your roll of honour logic here)
+	display_text.text = "--- OPERATION HUSH: ROLL OF HONOUR ---\n\n(Casualties are tallied...)"
+	setup_choices(["Operation Complete"])
+
+# --- HELPER & BACKGROUND LOGIC ---
+# --- HELPER & BACKGROUND LOGIC ---
+func handle_assignment_input(choice: String):
+	print("handle_assignment_input called with choice: ", choice) # DEBUG
+	
+	# Determine which assignment phase we are in
+	var is_landing = (current_phase == Phases.LANDING_ASSIGNMENT)
+	
+	var type = ""
+	var total_units = 0
+	var plan = {}
+	
+	if is_landing:
+		type = "troops"
+		if tanks_chosen and not tank_landing_plan.has(landing_assignment_order.back()):
+			type = "tanks"
+		total_units = monitors.filter(func(m): return m["carries"] == type).size()
+		plan = tank_landing_plan if type == "tanks" else troop_landing_plan
+	else: # Reinforcement
+		total_units = TOTAL_REINFORCEMENT_BARGES
+		plan = reinforcement_plan
+		
+	var assigned_so_far = 0
+	for beach in plan: assigned_so_far += plan[beach]
+	var remaining = total_units - assigned_so_far
+	
+	print("Type: ", type, " | Remaining: ", remaining, " | Current temp value: ", temp_assignment_value) # DEBUG
+	
+	# --- THIS IS THE CORRECTED LOGIC ---
+	if choice == "➖":
+		temp_assignment_value = max(0, temp_assignment_value - 1)
+		print("Decreased to: ", temp_assignment_value) # DEBUG
+	elif choice == "➕":
+		temp_assignment_value = min(remaining, temp_assignment_value + 1)
+		print("Increased to: ", temp_assignment_value) # DEBUG
+	elif choice == "Assign":
+		print("Assigning ", temp_assignment_value, " units") # DEBUG
+		if is_landing:
+			process_landing_assignment(str(temp_assignment_value))
+		else:
+			process_reinforcement_assignment(str(temp_assignment_value))
+		return # Stop here after assigning
+		
+	# Redraw the UI after a +/- press
+	if is_landing:
+		ask_for_next_assignment(type)
+	else:
+		ask_for_next_reinforcement_assignment()
+func refit_monitors_for_tanks():
+	var troop_monitors = monitors.filter(func(m): return m["carries"] == "troops")
+	var refitted = 0
+	for i in range(troop_monitors.size() - 1, -1, -1):
+		if refitted >= 3: break
+		var monitor = troop_monitors[i]
+		monitor["name"] = "Tank Lighter " + str(refitted + 1)
+		monitor["carries"] = "tanks"
+		monitor["soldiers"] = 0
+		monitor["tanks_onboard"] = TANKS_PER_LIGHTER
+		refitted += 1
+
+func apply_monitor_costs(cost):
+	var decommissioned = 0
+	for m in monitors:
+		if m["carries"] == "troops" and decommissioned < cost:
+			m["name"] = "Support Vessel " + str(decommissioned + 1)
+			m["carries"] = "support"
+			m["soldiers"] = 0
+			decommissioned += 1
+			
+
+
+func _get_active_fire_support() -> Array:
+	var roster: Array = []
+	if typeof(naval_support_ships) == TYPE_ARRAY and not naval_support_ships.is_empty():
+		for s in naval_support_ships:
+			if typeof(s) == TYPE_DICTIONARY and s.get("status", "Ready") == "Ready":
+				roster.append(s)
+	else:
+		# Fallback if roster is not initialized
+		pass
+	return roster
+
+func _ship_opening_lines(ships:Array) -> String:
+	if ships.is_empty(): return ""
+	var line = ""
+	var lead = ships[0].get("name", "A battleship")
+	line += lead + " opens fire with a deafening roar.\n"
+	if ships.size() >= 2:
+		line += ships[1].get("name","Another ship") + " joins the broadside.\n"
+	return line
+
+func _accuracy_flavour(ships:Array) -> String:
+	if ships.is_empty(): return ""
+	# (Your existing flavour text logic)
+	return "Gunners report their salvos are landing on target.\n"
+
+func _fleet_sub_contact_lines(ships:Array) -> String:
+	if ships.is_empty(): return ""
+	var active = ships.filter(func(s): return s.get("status", "") == "Ready")
+	if active.is_empty(): return ""
+	var base = 0.03 * active.size()
+	if q_ship_assignment == "fleet": base *= 0.2
+	if randf() >= base: return ""
+	var text = "\n**U-BOAT CONTACT!**\n"
+	var target = active.pick_random()
+	target["status"] = "Sunk" if target.get("class") == "steam" else "Disabled"
+	text += " > " + target["name"] + " is torpedoed and out of action!\n"
+	return text
+# --- REPLACE THE OLD FUNCTION WITH THIS ---
+func bombard_target(target_name):
+	var target = targets[target_name]
+	
+	var active_ships = _get_active_fire_support()
+	if active_ships.is_empty():
+		return # No ships, no bombardment
+
+	# 1. Calculate the fleet's base Firepower Score
+	var total_firepower = 0
+	for ship in active_ships:
+		if ship.get("class") == "qe":
+			total_firepower += 20 # Dreadnought
+		elif ship.get("class") == "tribal":
+			total_firepower += 4  # Destroyer
+
+	# 2. Apply multipliers based on conditions
+	var spotting_multiplier = 1.0
+	if bombardment_plan == "bacon":
+		spotting_multiplier = 1.75
+	elif bombardment_plan == "balloons":
+		spotting_multiplier = 1.35
+
+	var time_multiplier = 1.0
+	if time_of_day_effective == "night":
+		time_multiplier = 0.5
+	elif time_of_day_effective == "morning":
+		time_multiplier = 0.8
+
+	# 3. Calculate final effectiveness percentage
+	# CHANGE: The divisor is lowered from 275.0 to 150.0 to prevent zero-damage results.
+	var final_firepower = total_firepower * spotting_multiplier * time_multiplier
+	var base_effectiveness = final_firepower / 150.0
+
+	# 4. Allocate effectiveness based on player's targeting choice
+	var artillery_reduction_percent = 0.0
+	var garrison_reduction_percent = 0.0
+	
+	if naval_bombardment_target_focus == "batteries":
+		artillery_reduction_percent = base_effectiveness
+		garrison_reduction_percent = base_effectiveness * 0.3 # Collateral damage
+	elif naval_bombardment_target_focus == "garrison":
+		artillery_reduction_percent = base_effectiveness * 0.3
+		garrison_reduction_percent = base_effectiveness
+	elif naval_bombardment_target_focus == "split":
+		artillery_reduction_percent = base_effectiveness * 0.7
+		garrison_reduction_percent = base_effectiveness * 0.7
+		
+	# 5. Add a small amount of randomness to the final result
+	artillery_reduction_percent *= randf_range(0.85, 1.15)
+	garrison_reduction_percent *= randf_range(0.85, 1.15)
+
+	# Apply final calculated damage (using floori to ensure whole numbers)
+	var art_damage = floori(target.artillery * artillery_reduction_percent)
+	var gar_damage = floori(target.garrison * garrison_reduction_percent)
+	
+	target.artillery = max(0, target.artillery - art_damage)
+	target.garrison  = max(0, target.garrison  - gar_damage)
+func _advance_to_next_consolidation_turn():
+	consolidation_turn_current += 1
+	rfc_used_this_turn = false
+	consolidation_plan.clear()
+	current_assignment_index = 0
+	ask_for_next_consolidation_order()
+
+func process_redeployment_destination(choice):
+	var destination = ""
+	var valid_options = []
+	for beach in landing_assignment_order:
+		if beach != temp_redeployment_source:
+			valid_options.append(beach)
+	var choice_index = int(choice) - 1
+	if choice_index >= 0 and choice_index < valid_options.size():
+		destination = valid_options[choice_index]
+	else:
+		temp_redeployment_source = ""
+		ask_for_next_consolidation_order()
+		return
+	consolidation_plan[temp_redeployment_source] = {"action": "redeploy", "to": destination}
+	temp_redeployment_source = ""
+	current_assignment_index += 1
+	if current_assignment_index < landing_assignment_order.size():
+		ask_for_next_consolidation_order()
+	else:
+		resolve_consolidation_turn()
+
+
+
+func on_choice_made(extra_arg_0: String) -> void:
+	pass # Replace with function body.
+
+
+# Updated start_embarkation_assignment_phase for async compatibility
+func start_embarkation_assignment_phase():
+	print("--- Starting Embarkation Phase ---")
+	current_phase = Phases.EMBARKATION_ASSIGNMENT
+	
+	# Show embarkation UI
+	show_ui(UIMode.EMBARKATION)
+	
+	# Set the display text
+	display_text.text = "--- EMBARKATION & ASSIGNMENT ---\nThe bombardment is complete. Re-assign units between beachheads as required. The logistical impact (barges required) will update with each change."
+	
+	# Draw the UI (now async)
+	await draw_embarkation_ui()
+# --- THEME HELPER FUNCTION ---
+func _create_and_apply_theme():
+	# 1. Create a new, blank Theme resource in memory.
+	var new_theme = Theme.new()
+	
+	# 2. Define the font and colors we want to use.
+	var default_font = load("res://assets/cour.ttf") # IMPORTANT: Make sure this path is correct!
+	var font_color = Color("6631df")
+	var background_color = Color("f7f0e6")
+	
+	# 3. Create a StyleBox for the background. This is how Godot handles panel colors.
+	var bg_stylebox = StyleBoxFlat.new()
+	bg_stylebox.bg_color = background_color
+	
+	# 4. Set the properties on the theme for the base "Control" type.
+	# Any other control (Labels, Buttons, etc.) will inherit these unless overridden.
+	new_theme.set_font("font", "Control", default_font)
+	new_theme.set_font_size("font_size", "Control", 16)
+	new_theme.set_color("font_color", "Control", font_color)
+	new_theme.set_stylebox("panel", "Control", bg_stylebox)
+	
+	# 5. Apply the completed theme to the root UI node.
+	# We'll assume your root node is called "UI" and this script is attached to it.
+	# If your root UI node is the VBoxContainer, you can set it there instead.
+	self.theme = new_theme
+# CLEAN VERSION: Layout function without debug prints
+# SIMPLIFIED: Single layout function for RichTextLabel
+func setup_simple_layout():
+	await get_tree().process_frame
+	
+	var viewport_size = get_viewport().get_visible_rect().size
+	print("Viewport size: ", viewport_size)
+	
+	# FIRST: Fix the UIContainer size issue with padding
+	if ui_container:
+		var padding = 20  # 20px padding on all sides
+		ui_container.position = Vector2(padding, padding)
+		ui_container.size = Vector2(viewport_size.x - (padding * 2), viewport_size.y - (padding * 2))
+		print("UIContainer set to: ", ui_container.size, " with padding: ", padding)
+	
+	# SECOND: Make sure StandardGameUI fills the UIContainer
+	if standard_ui:
+		standard_ui.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		standard_ui.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		standard_ui.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		
+		# DEBUG: Check if it's actually a VBoxContainer
+		print("StandardGameUI type: ", standard_ui.get_class())
+		if standard_ui is VBoxContainer:
+			print("StandardGameUI IS a VBoxContainer - good!")
+			# Add some separation between children
+			(standard_ui as VBoxContainer).add_theme_constant_override("separation", 10)
+		else:
+			print("ERROR: StandardGameUI is NOT a VBoxContainer - this is the problem!")
+		
+		print("StandardGameUI should fill parent")
+	
+	# Image setup - constrained height but full width
+	if choice_image:
+		choice_image.custom_minimum_size = Vector2(0, 250)
+		choice_image.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		choice_image.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		choice_image.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+		print("ChoiceImage parent: ", choice_image.get_parent().name if choice_image.get_parent() else "no parent")
+	
+	# FIXED: Configure the ScrollContainer that contains the RichTextLabel
+	if display_text and display_text.get_parent():
+		var scroll_container = display_text.get_parent()
+		print("ScrollContainer found: ", scroll_container.name)
+		
+		# Configure the ScrollContainer
+		scroll_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		scroll_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		scroll_container.custom_minimum_size = Vector2(500, 300)
+		
+		# Configure the RichTextLabel
+		display_text.fit_content = false
+		display_text.scroll_active = false
+		display_text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		display_text.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		display_text.custom_minimum_size = Vector2(500, 200)
+		
+		# FIXED: Use your theme color instead of overriding to black
+		var theme_font_color = Color("6631df")  # Your purple color
+		display_text.add_theme_color_override("default_color", theme_font_color)
+		display_text.add_theme_color_override("font_color", theme_font_color)
+		
+		# Try bbcode formatting
+		display_text.bbcode_enabled = true
+		print("RichTextLabel and ScrollContainer configured")
+	
+	# Button container setup
+	if choice_container:
+		choice_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		choice_container.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		choice_container.custom_minimum_size = Vector2(0, 50)
+		print("ChoiceContainer parent: ", choice_container.get_parent().name if choice_container.get_parent() else "no parent")
+	
+	# Button setup
+	for button in choice_buttons:
+		if button:
+			button.custom_minimum_size = Vector2(150, 40)
+			button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+# Update _ready to use only the simple layout
+# Updated draw_embarkation_ui function for clean 3-column layout
+# Final clean version without debug prints
+# Final clean version with better sizing and layout
+func draw_embarkation_ui():
+	# 1. Clear any existing units from the lists
+	for child in middelkerke_unit_list.get_children(): 
+		child.queue_free()
+	for child in westende_unit_list.get_children(): 
+		child.queue_free()
+	for child in nieuwpoort_unit_list.get_children(): 
+		child.queue_free()
+
+	# Wait a frame for cleanup
+	await get_tree().process_frame
+	
+	# Force proper sizing for containers
+	force_container_sizing()
+
+	# 2. Prepare data holders for the three beaches
+	var beach_data = {
+		"Middelkerke Bains": {
+			"strength": 0, 
+			"unit_list": middelkerke_unit_list, 
+			"stats_label": middelkerke_stats,
+			"other_beaches": ["Westende Bains", "Nieuwpoort Bains"]
+		},
+		"Westende Bains": {
+			"strength": 0, 
+			"unit_list": westende_unit_list, 
+			"stats_label": westende_stats,
+			"other_beaches": ["Middelkerke Bains", "Nieuwpoort Bains"]
+		},
+		"Nieuwpoort Bains": {
+			"strength": 0, 
+			"unit_list": nieuwpoort_unit_list, 
+			"stats_label": nieuwpoort_stats,
+			"other_beaches": ["Middelkerke Bains", "Westende Bains"]
+		}
+	}
+
+	# 3. Process each unit and create UI elements
+	for unit in division_order_of_battle:
+		var dest = unit.current_dest
+		
+		# Add strength to the correct beach
+		beach_data[dest].strength += unit.strength
+		
+		# Create the unit row
+		var unit_row = create_unit_row(unit, beach_data[dest].other_beaches)
+		beach_data[dest].unit_list.add_child(unit_row)
+
+	# 4. Update the header stats for each beach
+	var total_barges = 0
+	for beach_name in beach_data:
+		var data = beach_data[beach_name]
+		var strength = data.strength
+		var barges = ceil(strength / float(SOLDIERS_PER_BARGE))
+		total_barges += barges
+		
+		# Update the stats label with smaller font
+		data.stats_label.text = "Str: " + str(strength) + " | Barges: " + str(barges)  # Shorter text
+		data.stats_label.add_theme_color_override("font_color", Color("6631df"))
+		data.stats_label.add_theme_font_size_override("font_size", 10)  # Even smaller font
+
+	# 5. Update the summary
+	summary_label.text = "Total Barges: " + str(total_barges) + " / " + str(TOTAL_REINFORCEMENT_BARGES)  # Shorter text
+	summary_label.add_theme_color_override("font_color", Color("6631df"))
+	summary_label.add_theme_font_size_override("font_size", 12)
+	
+	# 6. Add instructions and style confirm button
+	setup_embarkation_footer()
+
+func force_container_sizing():
+	# Make columns even narrower to definitely fit all 3
+	var scroll_containers = [
+		middelkerke_unit_list.get_parent(),
+		westende_unit_list.get_parent(),     
+		nieuwpoort_unit_list.get_parent()
+	]
+	
+	for scroll_container in scroll_containers:
+		if scroll_container:
+			scroll_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			scroll_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+			scroll_container.custom_minimum_size = Vector2(130, 500)  # Much narrower - 130px each
+	
+	# Force unit list sizing
+	var unit_lists = [middelkerke_unit_list, westende_unit_list, nieuwpoort_unit_list]
+	for unit_list in unit_lists:
+		if unit_list:
+			unit_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			unit_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+			unit_list.custom_minimum_size = Vector2(130, 500)  # Much narrower - 130px each
+
+func create_unit_row(unit_data: Dictionary, other_beaches: Array) -> Control:
+	# Create vertical container for unit name + buttons
+	var row = VBoxContainer.new()
+	row.custom_minimum_size = Vector2(0, 25)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	
+	# Unit name and strength label
+	var unit_label = Label.new()
+	unit_label.text = unit_data.name + " [" + str(unit_data.strength) + "]"
+	unit_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	unit_label.add_theme_color_override("font_color", Color("6631df"))
+	unit_label.add_theme_font_size_override("font_size", 10)  # Slightly smaller for compact layout
+	unit_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	unit_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	row.add_child(unit_label)
+	
+	# Button container (horizontal, below the text)
+	var button_container = HBoxContainer.new()
+	button_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	
+	# Reassignment buttons (small, contained within column)
+	for i in range(other_beaches.size()):
+		var beach_name = other_beaches[i]
+		var button = Button.new()
+		
+		# Use first letter of beach name for button text
+		var beach_initial = beach_name.substr(0, 1)  # M, W, N
+		button.text = "→" + beach_initial
+		button.custom_minimum_size = Vector2(25, 16)  # Small buttons to fit in 130px columns
+		button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		
+		# Theme the buttons with purple background
+		button.add_theme_color_override("font_color", Color.WHITE)
+		button.add_theme_font_size_override("font_size", 8)
+		
+		# Create a purple background style
+		var button_style = StyleBoxFlat.new()
+		button_style.bg_color = Color("6631df")
+		button_style.corner_radius_top_left = 2
+		button_style.corner_radius_top_right = 2
+		button_style.corner_radius_bottom_left = 2
+		button_style.corner_radius_bottom_right = 2
+		button.add_theme_stylebox_override("normal", button_style)
+		button.add_theme_stylebox_override("pressed", button_style)
+		button.add_theme_stylebox_override("hover", button_style)
+		
+		# Connect the reassignment signal
+		button.pressed.connect(_on_reassign_unit.bind(unit_data, beach_name))
+		
+		button_container.add_child(button)
+		
+		# Add small spacer between buttons
+		if i < other_beaches.size() - 1:
+			var spacer = Control.new()
+			spacer.custom_minimum_size = Vector2(2, 0)
+			button_container.add_child(spacer)
+	
+	row.add_child(button_container)
+	
+	# Add small spacer between units
+	var spacer = Control.new()
+	spacer.custom_minimum_size = Vector2(0, 3)
+	row.add_child(spacer)
+	
+	return row
+
+func setup_embarkation_footer():
+	# Create instructions if they don't exist
+	if not embarkation_ui.has_node("InstructionsLabel"):
+		var instructions = Label.new()
+		instructions.name = "InstructionsLabel"
+		instructions.text = "Use the →M, →W, →N buttons to reassign units between beaches. Barge requirements update automatically."
+		instructions.add_theme_color_override("font_color", Color("6631df"))
+		instructions.add_theme_font_size_override("font_size", 11)
+		instructions.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		instructions.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		instructions.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		
+		# Insert before confirm button
+		embarkation_ui.add_child(instructions)
+		embarkation_ui.move_child(instructions, embarkation_ui.get_child_count() - 2)
+	
+	# Style the confirm button
+	if confirm_button:
+		confirm_button.add_theme_color_override("font_color", Color.WHITE)
+		confirm_button.add_theme_font_size_override("font_size", 14)
+		
+		# Create purple background for confirm button
+		var confirm_style = StyleBoxFlat.new()
+		confirm_style.bg_color = Color("6631df")
+		confirm_style.corner_radius_top_left = 5
+		confirm_style.corner_radius_top_right = 5
+		confirm_style.corner_radius_bottom_left = 5
+		confirm_style.corner_radius_bottom_right = 5
+		confirm_button.add_theme_stylebox_override("normal", confirm_style)
+		confirm_button.add_theme_stylebox_override("pressed", confirm_style)
+		confirm_button.add_theme_stylebox_override("hover", confirm_style)
+
+func _on_reassign_unit(unit_data: Dictionary, new_destination: String):
+	# Update the unit's destination
+	unit_data.current_dest = new_destination
+	
+	# Redraw the entire UI to reflect the change
+	await draw_embarkation_ui()

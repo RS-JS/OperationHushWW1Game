@@ -1,0 +1,166 @@
+[gd_scene load_steps=9 format=3 uid="uid://cma76h40kgmw6"]
+
+[ext_resource type="Script" uid="uid://c5e0e6pld4s4v" path="res://scripts/MainController.gd" id="1_rf2cd"]
+[ext_resource type="Theme" uid="uid://c0cyi8ec4obhg" path="res://MAinThemeZ.tres" id="2_rpqi1"]
+[ext_resource type="Texture2D" uid="uid://da3kh0bpcb6sl" path="res://assets/HAig.png" id="2_x4av3"]
+[ext_resource type="Theme" uid="uid://badlu4s0okois" path="res://TestTheme.tres" id="4_rf2cd"]
+[ext_resource type="FontFile" uid="uid://c3s2orik3q3uh" path="res://assets/cour.ttf" id="5_a814b"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_rf2cd"]
+bg_color = Color(0.968627, 0.941176, 0.901961, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_a814b"]
+bg_color = Color(0.968627, 0.941176, 0.901961, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_5crlr"]
+bg_color = Color(0.968627, 0.941176, 0.901961, 1)
+
+[node name="Control" type="Control"]
+layout_mode = 3
+anchors_preset = 0
+script = ExtResource("1_rf2cd")
+
+[node name="UIContainer" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 13.0
+offset_top = 5.0
+offset_right = 597.0
+offset_bottom = 839.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("2_rpqi1")
+theme_override_constants/separation = 15
+
+[node name="StandardGameUI" type="VBoxContainer" parent="UIContainer"]
+layout_mode = 2
+
+[node name="ChoiceImage" type="TextureRect" parent="UIContainer/StandardGameUI"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 3.24
+texture = ExtResource("2_x4av3")
+expand_mode = 3
+
+[node name="ScrollContainer" type="ScrollContainer" parent="UIContainer/StandardGameUI"]
+layout_mode = 2
+
+[node name="DisplayText" type="RichTextLabel" parent="UIContainer/StandardGameUI/ScrollContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+size_flags_stretch_ratio = 3.2
+theme = ExtResource("4_rf2cd")
+theme_override_colors/default_color = Color(0.398441, 0.192353, 0.873972, 1)
+theme_override_fonts/normal_font = ExtResource("5_a814b")
+text = "Welcome to Operation Hush"
+fit_content = true
+scroll_following = true
+autowrap_mode = 2
+
+[node name="ChoiceContainer" type="VBoxContainer" parent="UIContainer/StandardGameUI"]
+layout_mode = 2
+
+[node name="ChoiceButton1" type="Button" parent="UIContainer/StandardGameUI/ChoiceContainer"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.176471, 0.141176, 0.152941, 1)
+theme_override_styles/normal = SubResource("StyleBoxFlat_rf2cd")
+
+[node name="ChoiceButton2" type="Button" parent="UIContainer/StandardGameUI/ChoiceContainer"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.176471, 0.141176, 0.152941, 1)
+theme_override_styles/normal = SubResource("StyleBoxFlat_a814b")
+
+[node name="ChoiceButton3" type="Button" parent="UIContainer/StandardGameUI/ChoiceContainer"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.176471, 0.141176, 0.152941, 1)
+theme_override_styles/normal = SubResource("StyleBoxFlat_5crlr")
+
+[node name="PontoonAssignmentUI" type="VBoxContainer" parent="UIContainer"]
+visible = false
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="UIContainer/PontoonAssignmentUI"]
+layout_mode = 2
+
+[node name="AssignmentContainer" type="VBoxContainer" parent="UIContainer/PontoonAssignmentUI"]
+layout_mode = 2
+
+[node name="ConfirmButton" type="Button" parent="UIContainer/PontoonAssignmentUI"]
+layout_mode = 2
+
+[node name="EmbarkationUI" type="VBoxContainer" parent="UIContainer"]
+visible = false
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="SummaryLabel" type="Label" parent="UIContainer/EmbarkationUI"]
+layout_mode = 2
+text = "Total Barges: 0 / 90"
+
+[node name="HBoxContainer" type="HBoxContainer" parent="UIContainer/EmbarkationUI"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="MiddelKerkeColumn" type="VBoxContainer" parent="UIContainer/EmbarkationUI/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="MiddelKerkeHeader" type="Label" parent="UIContainer/EmbarkationUI/HBoxContainer/MiddelKerkeColumn"]
+layout_mode = 2
+text = "MIDDELKERKE BAINS"
+
+[node name="MiddelKerkeStats" type="Label" parent="UIContainer/EmbarkationUI/HBoxContainer/MiddelKerkeColumn"]
+layout_mode = 2
+text = "\"Strength: 0 | Barges: 0\""
+
+[node name="ScrollContainer" type="ScrollContainer" parent="UIContainer/EmbarkationUI/HBoxContainer/MiddelKerkeColumn"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="MiddelKerkeUnitList" type="VBoxContainer" parent="UIContainer/EmbarkationUI/HBoxContainer/MiddelKerkeColumn/ScrollContainer"]
+layout_mode = 2
+
+[node name="WestendeColumn" type="VBoxContainer" parent="UIContainer/EmbarkationUI/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="WestendeColumnHeader" type="Label" parent="UIContainer/EmbarkationUI/HBoxContainer/WestendeColumn"]
+layout_mode = 2
+text = "WESTENDENE BAINS"
+
+[node name="WestendeColumnStats" type="Label" parent="UIContainer/EmbarkationUI/HBoxContainer/WestendeColumn"]
+layout_mode = 2
+text = "\"Strength: 0 | Barges: 0\""
+
+[node name="ScrollContainer" type="ScrollContainer" parent="UIContainer/EmbarkationUI/HBoxContainer/WestendeColumn"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="WestendeColumnUnitList" type="VBoxContainer" parent="UIContainer/EmbarkationUI/HBoxContainer/WestendeColumn/ScrollContainer"]
+layout_mode = 2
+
+[node name="NieuwpoortColumn" type="VBoxContainer" parent="UIContainer/EmbarkationUI/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="NieuwpoortHeader" type="Label" parent="UIContainer/EmbarkationUI/HBoxContainer/NieuwpoortColumn"]
+layout_mode = 2
+text = "NIEUWPOORT BAINS"
+
+[node name="NieuwpoortStats" type="Label" parent="UIContainer/EmbarkationUI/HBoxContainer/NieuwpoortColumn"]
+layout_mode = 2
+text = "\"Strength: 0 | Barges: 0\""
+
+[node name="ScrollContainer" type="ScrollContainer" parent="UIContainer/EmbarkationUI/HBoxContainer/NieuwpoortColumn"]
+layout_mode = 2
+
+[node name="NieuwpoortUnitList" type="VBoxContainer" parent="UIContainer/EmbarkationUI/HBoxContainer/NieuwpoortColumn/ScrollContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="ConfirmButton" type="Button" parent="UIContainer/EmbarkationUI"]
+layout_mode = 2
+text = "Confirm Embarkation"

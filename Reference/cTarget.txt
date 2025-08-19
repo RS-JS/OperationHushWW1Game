@@ -1,0 +1,1 @@
+' --- Code for the CTarget Class Module ---Public Name As StringPublic ArtilleryPieces As IntegerPublic InitialArtillery As Integer   ' <-- THIS LINE IS LIKELY MISSINGPublic ArtilleryHP As LongPublic Garrison As LongPublic InitialGarrison As LongPublic Ammunition As IntegerPublic Status As String

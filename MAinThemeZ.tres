@@ -1,0 +1,12 @@
+[gd_resource type="Theme" load_steps=2 format=3 uid="uid://c0cyi8ec4obhg"]
+
+[ext_resource type="FontFile" uid="uid://c3s2orik3q3uh" path="res://assets/cour.ttf" id="1_0ohd3"]
+
+[resource]
+default_font = ExtResource("1_0ohd3")
+default_font_size = 16
+Button/colors/font_color = Color(0.176471, 0.141176, 0.152941, 1)
+Button/colors/font_focus_color = Color(0.176471, 0.141176, 0.152941, 1)
+Control/font_sizes/font_size = 16
+Control/fonts/Font = ExtResource("1_0ohd3")
+TextEdit/colors/font_color = Color(0.856449, 0.00044107, 0.826897, 1)

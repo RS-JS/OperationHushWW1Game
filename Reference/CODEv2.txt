@@ -1,0 +1,994 @@
+extends Control
+
+# --- Node References ---
+@onready var display_text = $DisplayText
+@onready var input_text = $InputText
+@onready var submit_button = $SubmitButton
+@onready var choice_image = $ChoiceImage  # put this near your other @onready vars
+# --- Game Constants ---
+const SOLDIERS_PER_MONITOR = 300; const TOTAL_MONITOR = 9
+const TANKS_PER_LIGHTER = 6; const TANK_COMBAT_BONUS = 60
+const TOTAL_REINFORCEMENT_BARGES = 90; const SOLDIERS_PER_BARGE = 200
+const GROUND_ATTACK_BONUS = 150
+
+# --- Game State Variables ---
+enum Phases {
+    START_GAME,NAVAL_SUPPORT_DECISION, ARMOUR_DECISION, BOMBARDMENT_PLAN_DECISION,
+    Q_SHIP_DECISION, TIME_OF_DAY_DECISION, AIR_DOCTRINE_DECISION,
+    PLANNING_SUMMARY, BOMBARDMENT_REPORT, LANDING_ASSIGNMENT, LANDING_REPORT, REINFORCEMENT_ASSIGNMENT,
+    REINFORCEMENT_REPORT, CONSOLIDATION_ASSIGNMENT, CONSOLIDATION_RESOLUTION, FINAL_OUTCOME
+}
+var current_phase = Phases.START_GAME
+
+# --- Data Structures & Planning Choices ---
+
+# --- Naval Fire Support (historical names) ---
+# Obsolete pre-dreadnoughts commonly used for bombardment/training in WWI-era
+var STEAM_BATTLESHIPS = [
+    "HMS Jupiter", "HMS Mars", "HMS Magnificent", "HMS Prince George"
+]
+
+# Queen Elizabeth–class dreadnoughts (the famous fast battleships)
+var QE_DREADNOUGHTS = [
+    "HMS Queen Elizabeth", "HMS Warspite", "HMS Barham", "HMS Valiant", "HMS Malaya"
+]
+
+# Resolved assignment for the operation (filled after the decision)
+var naval_support_ships: Array = []  # each entry: {"name": String, "class": "steam"/"qe", "status": "Ready"/"Disabled"/"Sunk"}
+
+
+# Optional tuning
+const FIRE_SUPPORT_BASE_SUB_CHANCE := 0.03  # 3% per ship; capped later
+
+var targets = {
+    "Middelkerke Bains": {"artillery": 25, "garrison": 450, "battery_strength": 500, "battery_status": "Intact"},
+    "Westende Bains": {"artillery": 20, "garrison": 350, "battery_strength": 400, "battery_status": "Intact"},
+    "Nieuwpoort Bains": {"artillery": 30, "garrison": 550, "battery_strength": 600, "battery_status": "Intact"}
+}
+var monitors = []; var troop_landing_plan = {}; var tank_landing_plan = {}; var reinforcement_plan = {}
+var consolidation_plan = {}
+var landing_assignment_order = ["Middelkerke Bains", "Westende Bains", "Nieuwpoort Bains"]
+var current_assignment_index = 0
+var temp_redeployment_source = ""
+
+var naval_support_choice = "steam"; var q_ship_assignment = "none"
+var time_of_day = "day"; var tanks_chosen = false
+var bombardment_plan = "gunners"; var air_doctrine = "none"
+var threat_level = 0; var mustard_gas_used = false
+var time_of_day_effective = "day" 
+var morning_mist_failed = false     # morning wildcard flag
+
+var air_doctrine_event = ""  # "", "recon_bounced", "ga_friendly", "ga_ace"
+
+# --- Game Initialization ---
+func _ready():
+    randomize(); start_new_game()
+func start_new_game():
+    var tex = load("res://assets/Map.jpeg")  
+    choice_image.texture = tex
+    choice_image.visible = true  
+    populate_monitors()
+    troop_landing_plan.clear(); tank_landing_plan.clear(); reinforcement_plan.clear(); consolidation_plan.clear()
+    threat_level = 0;
+    mustard_gas_used = false;
+    air_doctrine = "none"
+    start_game_phase()
+func populate_monitors():
+    monitors.clear()
+    var monitor_names = ["HMS Erebus", "HMS Terror", "HMS Marshal Soult", "HMS M21", "HMS Sir John Moore", "HMS Lord Clive", "HMS General Craufurd", "HMS Prince Eugene", "HMS Raglan"]
+    for i in range(TOTAL_MONITOR):
+        monitors.append({"name": monitor_names[i], "carries": "troops", "soldiers": SOLDIERS_PER_MONITOR, "tanks_onboard": 0, "status": "Ready", "assigned_to": ""})
+
+# --- Input Handling ---
+func _on_submit_button_pressed():
+    var player_input = input_text.text.to_lower().strip_edges()
+    match current_phase:
+        Phases.START_GAME: start_naval_support_phase()
+        Phases.NAVAL_SUPPORT_DECISION: process_naval_support_choice(player_input)
+        Phases.ARMOUR_DECISION: process_armour_choice(player_input)
+        Phases.BOMBARDMENT_PLAN_DECISION: process_bombardment_plan_choice(player_input)
+        Phases.Q_SHIP_DECISION: process_q_ship_choice(player_input)
+        Phases.TIME_OF_DAY_DECISION: process_time_of_day_choice(player_input)
+        Phases.AIR_DOCTRINE_DECISION: process_air_doctrine_choice(player_input)
+        Phases.PLANNING_SUMMARY:start_bombardment_report_phase()
+        Phases.BOMBARDMENT_REPORT:start_landing_assignment_phase()
+        Phases.LANDING_ASSIGNMENT: process_landing_assignment(player_input)
+        Phases.LANDING_REPORT: start_reinforcement_assignment_phase()
+        Phases.REINFORCEMENT_ASSIGNMENT: process_reinforcement_assignment(player_input)
+        Phases.CONSOLIDATION_ASSIGNMENT:
+            if temp_redeployment_source != "": process_redeployment_destination(player_input)
+            else: process_consolidation_choice(player_input)
+
+# --- PLANNING PHASE (1-7) ---
+func start_game_phase():
+    current_phase = Phases.START_GAME
+    var message = ""
+    message += "--- OPERATION HUSH — BRIEFING ---\n\n"
+    message += "Three heavy coastal batteries dominate the Belgian shore: "
+    message += "Middelkerke, Westende, and Nieuport (Nieuwpoort). Among them stands the Pommern Battery—"
+    message += "at the time the largest gun in the world—capable of hurling high‑explosive shells over 38 miles inland.\n\n"
+    message += "You have been placed in command of a combined‑arms amphibious assault. Your mission:\n"
+    message += " • Land troops and tanks on the Flanders coast\n"
+    message += " • Silence the coastal batteries\n"
+    message += " • Link up with the Passchendaele offensive to relieve Ypres and shut down enemy use of the Belgian coast\n\n"
+    message += "Press Confirm to begin planning."
+    display_text.text = message
+    input_text.clear()
+    input_text.editable = false
+    submit_button.text = "Confirm"
+    submit_button.disabled = false
+func start_naval_support_phase():
+    current_phase = Phases.NAVAL_SUPPORT_DECISION
+    var message = "--- STEP 1: NAVAL SUPPORT ---\n\nThe Royal Navy has assigned four obsolete steam battleships for fire support.\nYou can petition the Admiralty for modern Dreadnoughts (far more accurate), but this will delay the operation.\n\n"
+    message += "1: Use Steam Ships (No delay).\n2: Petition for Dreadnoughts (High accuracy, **increases threat**)."
+    display_text.text = message; input_text.clear(); input_text.editable = true; submit_button.text = "Confirm"; submit_button.disabled = false
+func process_naval_support_choice(choice):
+    if choice == "1":
+        naval_support_choice = "steam"
+        naval_support_ships.clear()
+        naval_support_ships.append({"name": "HMS Jupiter",       "class": "steam", "status": "Ready"})
+        naval_support_ships.append({"name": "HMS Mars",          "class": "steam", "status": "Ready"})
+        naval_support_ships.append({"name": "HMS Magnificent",   "class": "steam", "status": "Ready"})
+        naval_support_ships.append({"name": "HMS Prince George", "class": "steam", "status": "Ready"})
+    elif choice == "2":
+        naval_support_choice = "dreadnought"
+        threat_level += 2
+        # pick two QE-class ships (shuffle is fine if you have a list handy; here’s a deterministic pair)
+        naval_support_ships.clear()
+        naval_support_ships.append({"name": "HMS Warspite", "class": "qe", "status": "Ready"})
+        naval_support_ships.append({"name": "HMS Barham",   "class": "qe", "status": "Ready"})
+    else:
+        display_text.text += "\n\nInvalid choice."
+        return
+
+    start_armour_phase()
+
+
+
+func start_armour_phase():
+    var tex = load("res://assets/HAig.png")  
+    choice_image.texture = tex
+    choice_image.visible = true  
+    current_phase = Phases.ARMOUR_DECISION
+    var message = "--- STEP 2: ARMOURED SUPPORT ---\n\n"
+    message += "For the landings, nine monitor-class vessels have been made available and retrofitted to carry 300 troops each, along with armoured cars, motorcycles, and machine-gun batteries.\n"
+    message += "These will be supported by 90 requisitioned trawlers, each carrying 200 men to the beaches.\n\n"
+    message += "However, Field Marshal Haig has burst into the room, demanding that tanks be included in the landings. "
+    message += "This would involve converting three of the monitors into specialist tank lighters, removing their troop capacity entirely.\n\n"
+    message += "1: Retain the monitors for troop transport and tell Haig he can do one.\n"
+    message += "2: Approve Haig’s plan and lose three monitors to tank conversion."
+    display_text.text = message
+
+func process_armour_choice(choice):
+    if choice == "1": tanks_chosen = false
+    elif choice == "2": tanks_chosen = true; refit_monitors_for_tanks()
+    else: display_text.text += "\n\nInvalid choice."; return
+    start_bombardment_plan_phase()
+func start_bombardment_plan_phase():
+    current_phase = Phases.BOMBARDMENT_PLAN_DECISION
+    var message = "--- STEP 3: BOMBARDMENT METHOD ---\n\n"
+    message += "Haig isn’t the only one eyeing up the monitors. The RNAS would like to requisition one to carry observation balloons, "
+    message += "allowing the naval bombardment to be directed with much greater accuracy.\n\n"
+    message += "Meanwhile, Admiral Bacon has a daring plan: use two of the monitors as fixed reference points for gun-ranging purposes. "
+    message += "It’s highly risky, but could pay dividends if it works.\n\n"
+    message += "It’s your choice:\n"
+    message += "1: RNAS Balloons (Cost: 1 Monitor, improved accuracy).\n"
+    message += "2: Admiral Bacon’s Buoys (Cost: 2 Monitors, high risk/high reward).\n"
+    message += "3: Trust the Gunners (Cost: 0 Monitors, unpredictable)."
+    display_text.text = message
+
+func process_bombardment_plan_choice(choice):
+    var cost = 0
+    if choice == "1": bombardment_plan = "balloons"; cost = 1
+    elif choice == "2": bombardment_plan = "bacon"; cost = 2
+    elif choice == "3": bombardment_plan = "gunners"
+    else: display_text.text += "\n\nInvalid choice."; return
+    apply_monitor_costs(cost); start_q_ship_phase()
+func start_q_ship_phase():
+    current_phase = Phases.Q_SHIP_DECISION
+    var message = "--- STEP 4: SUBMARINE DEFENCE ---\n\n"
+    message += "Intelligence reports U‑boats active in the sector. Q‑Ships are on hand and can be deployed either to screen the fire‑support battleships "
+    message += "or to guard the landing flotillas. Their presence will not go unnoticed, however; the enemy will likely be put on alert.\n\n"
+    message += "1: Screen the Fire Support Fleet (protect the bombarding ships).\n"
+    message += "2: Screen the Landing Force (protect monitors/tank lighters on approach).\n"
+    message += "3: No Q‑Ships (accept the risk)."
+    display_text.text = message
+
+func process_q_ship_choice(choice):
+    if choice == "1": q_ship_assignment = "fleet"
+    elif choice == "2": q_ship_assignment = "screen"
+    elif choice == "3": q_ship_assignment = "none"
+    else: display_text.text += "\n\nInvalid choice."; return
+    start_time_of_day_phase()
+func start_time_of_day_phase():
+    current_phase = Phases.TIME_OF_DAY_DECISION
+    var message = "--- STEP 5: H-HOUR ---\n\n"
+    message += "The timing of the assault will shape everything that follows. Choose carefully:\n\n"
+    message += "1: Night Assault — Darkness cloaks the approach, but makes ranging and navigation treacherous. Shore batteries may blunder into deadly lucky hits.\n\n"
+    message += "2: Morning Landings — The early mist is your ally: it veils the flotillas while still allowing controlled gunnery once it lifts. "
+    message += "Intelligence warns weather is fickle; on rare mornings the mist fails to form.\n\n"
+    message += "3: Full Daylight — Spotters see perfectly and guns range quickly, but the enemy sees you coming just as clearly.\n"
+    display_text.text = message
+
+
+func process_time_of_day_choice(choice):
+    if choice == "1": time_of_day = "night"
+    elif choice == "2": time_of_day = "morning"
+    elif choice == "3": time_of_day = "day"
+    else: display_text.text += "\n\nInvalid choice."; return
+    start_air_doctrine_phase()
+func start_air_doctrine_phase():
+    var tex = load("res://assets/Flashheart.jpeg")  
+    choice_image.texture = tex
+    choice_image.visible = true
+    current_phase = Phases.AIR_DOCTRINE_DECISION
+    var message = "--- STEP 6: AIR DOCTRINE ---\n\n"
+    message += "The Royal Flying Corps are keen to get in on the act — led, it seems, by a certain dashing Captain with a marvelous moustache. "
+    message += "They’re champing at the bit to show off. Where do you want them?\n\n"
+    message += "1: Air Reconnaissance — RFC scouts will skim the lines at dawn and bring back estimates of enemy strength and dispositions.\n"
+    message += "2: Ground Attack — The boys in the SE5s will swoop through the beachhead, peppering trenches and gun‑pits to give your assault some extra bite.\n"
+    display_text.text = message
+    submit_button.text = "Confirm Doctrine"
+
+
+func process_air_doctrine_choice(choice):
+    if choice == "1": air_doctrine = "recon"
+    elif choice == "2": air_doctrine = "ground_attack"
+    else: display_text.text += "\n\nInvalid choice."; return
+    show_planning_summary()
+func refit_monitors_for_tanks():
+    var troop_monitors = monitors.filter(func(m): return m["carries"] == "troops")
+    var refitted = 0
+    # walk from the back so we convert later-listed monitors first
+    for i in range(troop_monitors.size() - 1, -1, -1):
+        if refitted >= 3:
+            break
+        var monitor = troop_monitors[i]
+        monitor["name"] = "Tank Lighter " + str(refitted + 1)
+        monitor["carries"] = "tanks"
+        monitor["soldiers"] = 0
+        monitor["tanks_onboard"] = TANKS_PER_LIGHTER
+        refitted += 1
+
+func apply_monitor_costs(cost):
+    var decommissioned = 0
+    for m in monitors:
+        if m["carries"] == "troops" and decommissioned < cost:
+            m["name"] = "Support Vessel " + str(decommissioned + 1)
+            m["carries"] = "support"
+            m["soldiers"] = 0
+            decommissioned += 1
+
+func show_planning_summary():
+    current_phase = Phases.PLANNING_SUMMARY
+
+    var troop_monitors_count = monitors.filter(func(m): return m["carries"] == "troops").size()
+    var tank_lighters_count  = monitors.filter(func(m): return m["carries"] == "tanks").size()
+
+    var message = "--- OPERATION PLAN FINALIZED ---\n\n"
+    message += "Naval Support: " + naval_support_choice.capitalize() + "s\n"
+    message += "Bombardment Plan: " + bombardment_plan.capitalize() + "\n"
+    message += "Air Doctrine: " + air_doctrine.replace("_", " ").capitalize() + "\n"
+    message += "H-Hour: " + time_of_day.capitalize() + "\n"
+  
+    var u_line = "U-Boat Defence: "
+    u_line += "None" if q_ship_assignment == "none" else "Screen " + q_ship_assignment.capitalize()
+    message += u_line + "\n\n"
+
+    # Landing lift available *now*
+    message += "Your available landing force is:\n"
+    message += " > " + str(troop_monitors_count) + " Troop Monitors ("
+    message += str(SOLDIERS_PER_MONITOR) + " each = "
+    message += str(troop_monitors_count * SOLDIERS_PER_MONITOR) + " men)\n"
+    message += " > " + str(tank_lighters_count) + " Tank Lighters\n\n"
+
+    # Reserve lift waiting on trawlers (reinforcements)
+    message += "Reserve (at sea):\n"
+    message += " > " + str(TOTAL_REINFORCEMENT_BARGES) + " Trawlers ("
+    message += str(SOLDIERS_PER_BARGE) + " each = "
+    message += str(TOTAL_REINFORCEMENT_BARGES * SOLDIERS_PER_BARGE) + " men)\n\n"
+
+    message += "Current Threat Level: " + str(threat_level) + "\n\n"
+    message += "Press Confirm to execute bombardment and proceed to assignment."
+    display_text.text = message
+    input_text.editable = false
+    submit_button.text = "Begin Bombardment"
+func _get_active_fire_support() -> Array:
+    # Prefer the real roster if you have it; otherwise synthesize one from the choice
+    var roster: Array = []
+    if typeof(naval_support_ships) == TYPE_ARRAY and not naval_support_ships.is_empty():
+        for s in naval_support_ships:
+            if typeof(s) == TYPE_DICTIONARY and s.get("status", "Ready") == "Ready":
+                roster.append(s)
+    else:
+        if naval_support_choice == "dreadnought":
+            roster = [
+                {"name":"HMS Warspite","class":"qe","status":"Ready"},
+                {"name":"HMS Barham","class":"qe","status":"Ready"}
+            ]
+        else:
+            roster = [
+                {"name":"HMS Jupiter","class":"steam","status":"Ready"},
+                {"name":"HMS Mars","class":"steam","status":"Ready"},
+                {"name":"HMS Magnificent","class":"steam","status":"Ready"},
+                {"name":"HMS Prince George","class":"steam","status":"Ready"}
+            ]
+    return roster
+
+func _ship_opening_lines(ships:Array) -> String:
+    if ships.is_empty(): return ""
+    var line = ""
+    var lead = ships[0].get("name", "A battleship")
+    line += lead + " opens fire with a deafening roar; great plumes of spray leap beyond the seawall.\n"
+    if ships.size() >= 2:
+        line += ships[1].get("name","Another ship") + " joins the broadside, her turrets thundering in sequence.\n"
+    if ships.size() >= 3:
+        line += "Soon the whole line is alight with muzzle-flashes.\n"
+    return line
+
+func _accuracy_flavour(ships:Array) -> String:
+    if ships.is_empty(): return ""
+    var s = ships[randi_range(0, ships.size()-1)].get("name","The flagship")
+    var tid = time_of_day if typeof(time_of_day) == TYPE_STRING else "day"
+    var plan = bombardment_plan if typeof(bombardment_plan) == TYPE_STRING else "gunners"
+
+    # Baseline “good shot” odds by method; Bacon = swingy, Balloons = steady, Gunners = erratic
+    var good_roll = randf()
+    var good_cutoff = 0.5
+    if plan == "bacon": good_cutoff = 0.55 + randf()*0.15  # sometimes brilliant
+    elif plan == "balloons": good_cutoff = 0.6             # generally solid
+    else: good_cutoff = 0.45                                # gunners on their own
+
+    # Light conditions nudge it
+    if tid == "night": good_cutoff -= 0.1
+    elif tid == "morning": good_cutoff += 0.05
+    # (day = baseline)
+
+    if good_roll < good_cutoff:
+        var lines = [
+            s + " reports a satisfying column of black smoke on Westende.",
+            s + " brackets the Middelkerke battery; splinters and dust geysers rise from the dunes.",
+            s + " walks the salvo onto Nieuwpoort; range-takers call steady bearing, steady elevation."
+        ]
+        return lines[randi_range(0, lines.size()-1)] + "\n"
+    else:
+        var lines2 = [
+            "Signals from " + s + ": shells falling short; visibility and mirage complicate ranging.",
+            "Spotters complain fall-of-shot is indistinct — " + s + " holds fire to correct.",
+            s + " straddles the battery but fails to land a telling hit."
+        ]
+        # Balloons sometimes help, Bacon sometimes hurts
+        if plan == "balloons" and randf() < 0.6:
+            lines2.append("Balloon observers signal a crisp correction; next salvos should bite.")
+        elif plan == "bacon" and randf() < 0.6:
+            lines2.append("Bacon’s ranging gambit looks risky in this light; captains grumble on the TBS.")
+        return lines2[randi_range(0, lines2.size()-1)] + "\n"
+
+# Same logic as your fleet U-boat wildcard, but returns text instead of writing straight to display_text
+func _fleet_sub_contact_lines(ships:Array) -> String:
+    if ships.is_empty(): return ""
+    var active: Array = []
+    for s in ships:
+        if s.get("status","") == "Ready": active.append(s)
+    if active.is_empty(): return ""
+
+    var base = 0.03 * active.size()
+    if base > 0.25: base = 0.25
+    if q_ship_assignment == "fleet": base *= 0.2
+    if randf() >= base: return ""  # no contact
+
+    var text = "\n**U-BOAT CONTACT NEAR THE FIRE-SUPPORT LINE!**\n"
+    var target: Dictionary = active[randi_range(0, active.size()-1)]
+    if target.get("class") == "steam":
+        target["status"] = "Sunk"
+        text += " > " + String(target["name"]) + " is torpedoed and sinks out of the line!\n"
+    else:
+        target["status"] = "Disabled"
+        text += " > " + String(target["name"]) + " takes a fish amidships and is out of action!\n"
+    # Also update the real roster if present
+    if typeof(naval_support_ships) == TYPE_ARRAY:
+        for i in range(naval_support_ships.size()):
+            var n = naval_support_ships[i]
+            if typeof(n) == TYPE_DICTIONARY and n.get("name","") == target.get("name",""):
+                naval_support_ships[i]["status"] = target["status"]
+                break
+    return text
+
+func start_bombardment_report_phase():
+    var tex = load("res://assets/MataHari.jpg")  
+    choice_image.texture = tex
+    choice_image.visible = true  
+    
+    current_phase = Phases.BOMBARDMENT_REPORT
+    input_text.editable = false
+    submit_button.disabled = false
+    submit_button.text = "Proceed to Assignments"
+
+    var report = ""
+    report += "--- BOMBARDMENT REPORT ---\n\n"
+
+    # 1) The line opens fire
+    var firing_line = _get_active_fire_support()
+    if not firing_line.is_empty():
+        report += _ship_opening_lines(firing_line)
+
+    # 2) Any U-boat drama against the fire-support line (steam = sunk, QE = disabled)
+    report += _fleet_sub_contact_lines(firing_line)
+
+    # 3) A couple of flavour snippets about accuracy/ranging based on options/light
+    report += _accuracy_flavour(firing_line)
+
+    # 4) Apply actual damage (your existing combat math) and then have the spy report deltas
+    report += "\nOur agent ashore flashes a lamp from the dunes:\n"
+    report += "(Observation method: " + bombardment_plan.capitalize() + ")\n\n"
+
+    for target_name in targets.keys():
+        var t = targets[target_name]
+        var pre_art = t["artillery"] if typeof(t) == TYPE_DICTIONARY else 0
+        var pre_gar = t["garrison"]  if typeof(t) == TYPE_DICTIONARY else 0
+
+        var outcome = bombard_target(target_name)  # this mutates targets
+
+        var da = max(0, pre_art - targets[target_name]["artillery"])
+        var dg = max(0, pre_gar - targets[target_name]["garrison"])
+
+        report += " > " + target_name + ": batteries reduced by " + str(da) + " guns (now " + str(targets[target_name]["artillery"]) + "), "
+        report += "garrison losses estimated at " + str(dg) + " (now " + str(targets[target_name]["garrison"]) + ").\n"
+    report += "\n(Press Confirm to continue to landing assignments.)"
+
+    display_text.text = report
+
+# --- ASSIGNMENT PHASE ---
+func start_landing_assignment_phase():
+    current_phase = Phases.LANDING_ASSIGNMENT; troop_landing_plan.clear(); tank_landing_plan.clear(); current_assignment_index = 0
+    
+    if tanks_chosen: ask_for_next_assignment("tanks")
+    else: ask_for_next_assignment("troops")
+func ask_for_next_assignment(type):
+    var total_vessels = monitors.filter(func(m): return m["carries"] == type).size()
+    var plan = tank_landing_plan if type == "tanks" else troop_landing_plan
+    var vessel_name = "Tank Lighters" if type == "tanks" else "Troop Monitors"
+    var assigned = 0
+    for beach in plan: assigned += plan[beach]
+    var remaining = total_vessels - assigned
+    var current_beach = landing_assignment_order[current_assignment_index]
+    var message = "--- " + vessel_name.to_upper() + " ASSIGNMENT ---\n\nYou have " + str(remaining) + " " + vessel_name + " to assign.\n\nHow many will you send to " + current_beach + "?"
+    display_text.text = message; input_text.clear(); input_text.editable = true; submit_button.text = "Assign"
+func process_landing_assignment(player_input):
+    var type = "troops"
+    if tanks_chosen and not tank_landing_plan.has(landing_assignment_order.back()): type = "tanks"
+    var total_vessels = monitors.filter(func(m): return m["carries"] == type).size()
+    var plan = tank_landing_plan if type == "tanks" else troop_landing_plan
+    if not player_input.is_valid_int(): display_text.text += "\n\nInvalid input."; return
+    var num_assigned = int(player_input)
+    var assigned_so_far = 0
+    for beach in plan: assigned_so_far += plan[beach]
+    var remaining = total_vessels - assigned_so_far
+    if num_assigned < 0 or num_assigned > remaining: display_text.text += "\n\nInvalid number."; return
+    var current_beach = landing_assignment_order[current_assignment_index]; plan[current_beach] = num_assigned; assigned_so_far += num_assigned; current_assignment_index += 1
+    if assigned_so_far == total_vessels:
+        while current_assignment_index < landing_assignment_order.size(): plan[landing_assignment_order[current_assignment_index]] = 0; current_assignment_index += 1
+        if type == "tanks": current_assignment_index = 0; ask_for_next_assignment("troops")
+        else: resolve_landings()
+    elif current_assignment_index < landing_assignment_order.size() - 1: ask_for_next_assignment(type)
+    else:
+        var last_beach = landing_assignment_order.back(); plan[last_beach] = remaining - num_assigned
+        if type == "tanks": current_assignment_index = 0; ask_for_next_assignment("troops")
+        else: resolve_landings()
+
+# --- RESOLUTION PHASES ---
+func resolve_time_of_day_wildcard():
+    time_of_day_effective = time_of_day
+    morning_mist_failed = false
+
+    if time_of_day == "morning":
+        # <5% chance the mist never forms (treat as Day for mechanics)
+        if randf() < 0.04:
+            time_of_day_effective = "day"
+            morning_mist_failed = true
+            display_text.text += "\n\n**METEOROLOGICAL SURPRISE**: The expected morning mist never formed; visibility is crystal clear. Enemy observers are alert."
+            await get_tree().create_timer(1.0).timeout
+func resolve_air_wildcards():
+    air_doctrine_event = ""
+    if air_doctrine == "recon":
+        # ~4% chance scouts get bounced by enemy patrols and can't report
+        if randf() < 0.04:
+            air_doctrine_event = "recon_bounced"
+            display_text.text += "\n\n**RFC RECON LOST!** Flashheart tears off to duel a Hun patrol. The scouts are scattered and no report comes in."
+            await get_tree().create_timer(1.0).timeout
+    elif air_doctrine == "ground_attack":
+        # Rare friendly-fire oops (<=4%), and a separate chance for an ace-quality strike (~8%)
+        if randf() < 0.04:
+            air_doctrine_event = "ga_friendly"
+        elif randf() < 0.08:
+            air_doctrine_event = "ga_ace"
+
+func execute_bombardment_and_wildcards():
+    var report = ""
+    # Air wildcards for this turn (may print a short notice)
+    resolve_air_wildcards()
+    # Resolve time-of-day effects (and the rare morning-mist failure) for this turn
+    resolve_time_of_day_wildcard()
+    # Fire-support ships can be hit by U-boats before the shoot begins
+    resolve_fleet_submarine_attack()
+    if air_doctrine == "recon" and air_doctrine_event != "recon_bounced":
+        report += "--- AIR RECONNAISSANCE REPORT ---\n\nRFC scouts report the following garrison estimates:\n"
+        for beach_name in landing_assignment_order:
+            var garrison = targets[beach_name].garrison
+            var estimate_low = max(0, garrison - 50)
+            var estimate_high = garrison + 50
+            report += " > " + beach_name + ": " + str(estimate_low) + " - " + str(estimate_high) + " troops.\n"
+    report += "\n-------------------------------------\n\n"
+
+    report += "--- BOMBARDMENT AFTER-ACTION REPORT ---\n\n"
+    for target_name in targets.keys():
+        report += bombard_target(target_name) + "\n"
+    display_text.text = report; await get_tree().create_timer(3.0).timeout
+    resolve_enemy_reinforcements()
+func bombard_target(target_name):
+    var target = targets[target_name]
+    var dice_roll = randi_range(1, 6)
+    var artillery_damage = 0
+    var garrison_damage = 0
+    var result_message = "Target: " + target_name + "\n"
+
+    # Visibility thresholds: higher = easier to score a hit
+    var threshold = 4  # baseline (morning)
+    if time_of_day_effective == "night":
+        threshold = 5      # hardest to hit
+    elif time_of_day_effective == "day":
+        threshold = 3      # easiest to hit
+    # morning stays at 4; if mist failed we already set effective = "day"
+
+    if bombardment_plan == "bacon":
+        if dice_roll > threshold - 1:  # i.e., >= threshold
+            artillery_damage = randi_range(4, 6)
+            garrison_damage  = randi_range(40, 60)
+            result_message += "  Outcome: Direct hit!\n"
+        else:
+            result_message += "  Outcome: Miss!\n"
+    elif bombardment_plan == "balloons":
+        if dice_roll > threshold - 1:
+            artillery_damage = randi_range(2, 4)
+            garrison_damage  = randi_range(20, 40)
+            result_message += "  Outcome: Hit.\n"
+        else:
+            result_message += "  Outcome: Ineffective.\n"
+    else:
+        # Trust the gunners: always some effect, but quality varies with light
+        if dice_roll > threshold:
+            artillery_damage = randi_range(3, 6)
+            garrison_damage  = randi_range(40, 60)
+            result_message += "  Outcome: Well-ranged salvo.\n"
+        else:
+            artillery_damage = randi_range(1, 3)
+            garrison_damage  = randi_range(10, 35)
+            result_message += "  Outcome: Erratic fire.\n"
+
+    target.artillery = max(0, target.artillery - artillery_damage)
+    target.garrison  = max(0, target.garrison  - garrison_damage)
+    result_message += "  Surviving Forces: " + str(target.artillery) + " artillery, " + str(target.garrison) + " garrison."
+    return result_message
+func resolve_landings():
+    current_phase = Phases.LANDING_REPORT
+    input_text.editable = false
+    input_text.clear()
+    submit_button.disabled = false
+    submit_button.text = "Proceed to Reinforcements"
+
+    # Assign monitors/lighters to beaches based on plans
+    var troop_pool = monitors.filter(func(m): return m.carries == "troops")
+    var tank_pool  = monitors.filter(func(m): return m.carries == "tanks")
+    var troop_idx = 0
+    var tank_idx  = 0
+    for beach_name in landing_assignment_order:
+        var num_troops = troop_landing_plan.get(beach_name, 0)
+        var num_tanks  = tank_landing_plan.get(beach_name, 0)
+        for i in range(num_troops):
+            if troop_idx < troop_pool.size():
+                troop_pool[troop_idx].assigned_to = beach_name
+                troop_idx += 1
+        for i in range(num_tanks):
+            if tank_idx < tank_pool.size():
+                tank_pool[tank_idx].assigned_to = beach_name
+                tank_idx += 1
+
+    var report = "--- LANDING ACTION REPORT ---\n\n"
+
+    for beach_name in landing_assignment_order:
+        var beach_data = targets[beach_name]
+        report += "== Operations at " + beach_name + " ==\n"
+
+        var assigned_m = monitors.filter(func(m): return m.assigned_to == beach_name)
+
+        var landed_s = 0
+        var casualties_as = 0
+        var op_tanks = 0
+
+        var approach_casualties = 0  # losses at sea (before stepping onto the beach)
+        var assault_casualties  = 0  # losses during the beach assault
+
+        report += "  - Naval Approach:\n"
+        if not assigned_m.is_empty():
+            # U-boat wildcard vs landing force
+            resolve_submarine_attack(assigned_m)
+
+            for m in assigned_m:
+                if m.status == "Sunk":
+                    continue
+
+                # --- Shore-battery hit odds (your mechanic: lower hc → more hits) ---
+                var hits = 0
+                var hc = 22  # Day baseline ≈ 4.5% per gun
+                if time_of_day == "night":
+                    hc = 18    # riskier at night (≈ 5.6% per gun)
+                elif time_of_day == "morning":
+                    hc = 24    # a bit safer in morning mist (≈ 4.2%)
+
+                if m.carries == "tanks":
+                    hc -= 2    # slightly easier to hit than troop monitors
+
+                for _i in range(beach_data.artillery):
+                    if randi_range(1, hc) == hc:
+                        hits += 1
+
+                if m.carries == "troops":
+                    if hits >= 2:
+                        m.status = "Sunk"
+                        approach_casualties += m.soldiers
+                        casualties_as += m.soldiers
+                        m.soldiers = 0  # prevent later double-count
+                        report += "    > " + m.name + " was sunk!\n"
+                    elif hits == 1:
+                        m.status = "Crippled"
+                        var before = m.soldiers
+                        m.soldiers = int(before * 0.5)
+                        var lost = before - m.soldiers
+                        approach_casualties += lost
+                        casualties_as += lost
+                        landed_s += m.soldiers
+                        report += "    > " + m.name + " was crippled.\n"
+                    else:
+                        landed_s += m.soldiers
+                        report += "    > " + m.name + " landed its troops safely.\n"
+
+                elif m.carries == "tanks":
+                    if hits >= 2:
+                        m.status = "Sunk"
+                        m.tanks_onboard = 0
+                        report += "    > " + m.name + " took multiple hits and exploded!\n"
+                    elif hits == 1:
+                        m.status = "Damaged"
+                        var lost_t = int(m.tanks_onboard * 0.5)
+                        m.tanks_onboard -= lost_t
+                        report += "    > " + m.name + " was damaged; " + str(lost_t) + " tanks lost overboard.\n"
+                    else:
+                        report += "    > " + m.name + " reached the beach approach.\n"
+        else:
+            report += "    > No forces assigned to this beach.\n"
+
+        # --- Tanks attempt the seawall and become combat operational ---
+        if tank_landing_plan.get(beach_name, 0) > 0:
+            report += "  - Armoured Landing:\n"
+            var tanks_survived = 0
+            for m in assigned_m.filter(func(m): return m.carries == "tanks" and m.status != "Sunk"):
+                tanks_survived += m.tanks_onboard
+            # Clamp just in case (safety)
+            if tanks_survived < 0: tanks_survived = 0
+
+            if tanks_survived > 0:
+                var tanks_over_wall = 0
+                for i in range(tanks_survived):
+                    if randf() > 0.5:
+                        tanks_over_wall += 1
+                # Ensure not exceeding survived
+                tanks_over_wall = min(tanks_over_wall, tanks_survived)
+                report += "    > " + str(tanks_over_wall) + "/" + str(tanks_survived) + " tanks cleared the seawall.\n"
+
+                for i in range(tanks_over_wall):
+                    if randf() > 0.5:
+                        op_tanks += 1
+                # Ensure op tanks never exceed those over the wall
+                op_tanks = min(op_tanks, tanks_over_wall)
+                report += "    > " + str(op_tanks) + " of those are combat operational.\n"
+            else:
+                report += "    > No tanks survived the approach.\n"
+
+        beach_data.operational_tanks = op_tanks
+
+        # --- Beach Assault resolution ---
+        report += "  - Beach Assault:\n"
+        var initial_force = troop_landing_plan.get(beach_name, 0) * SOLDIERS_PER_MONITOR
+        if initial_force > 0:
+            report += "    > " + str(landed_s) + "/" + str(initial_force) + " soldiers made it ashore.\n"
+
+        var garrison = beach_data.garrison
+        beach_data.landed_force = landed_s
+        beach_data.allied_casualties = casualties_as
+        beach_data.enemy_casualties = 0
+        beach_data.allied_prisoners = 0
+        beach_data.enemy_prisoners = 0
+
+        # Mustard gas wipe
+        if beach_data.get("mustard_gas", false):
+            report += "    > MUSTARD GAS! The enemy unleashed a gas attack, annihilating the landed infantry!\n"
+            beach_data.allied_casualties += landed_s
+            assault_casualties += landed_s
+            beach_data.landed_force = 0
+            landed_s = 0
+
+        if landed_s + (op_tanks * 10) > 0:
+            var allied_p = landed_s + (op_tanks * TANK_COMBAT_BONUS) + randi_range(1, 50)
+            if air_doctrine == "ground_attack":
+                report += "    > RFC aircraft strafe the defenders, aiding the assault!\n"
+                allied_p += GROUND_ATTACK_BONUS
+
+            var enemy_p = garrison + randi_range(1, 50)
+
+            if allied_p > enemy_p * 1.5:
+                beach_data.beach_status = "Secured"
+                var gc = randi_range(int(landed_s * 0.1), int(landed_s * 0.2))
+                assault_casualties += gc
+                beach_data.allied_casualties += gc
+                beach_data.landed_force = max(0, landed_s - gc)  # reflect losses
+                beach_data.enemy_casualties = randi_range(int(garrison * 0.5), int(garrison * 0.7))
+                beach_data.enemy_prisoners = garrison - beach_data.enemy_casualties
+                report += "    > Outcome: Beachhead SECURED.\n"
+
+            elif allied_p > enemy_p * 0.8:
+                beach_data.beach_status = "Pinned Down"
+                var gc2 = randi_range(int(landed_s * 0.3), int(landed_s * 0.5))
+                assault_casualties += gc2
+                beach_data.allied_casualties += gc2
+                beach_data.landed_force = max(0, landed_s - gc2)  # reflect losses
+                beach_data.enemy_casualties = randi_range(int(garrison * 0.2), int(garrison * 0.4))
+                report += "    > Outcome: Troops are PINNED DOWN.\n"
+
+            else:
+                beach_data.beach_status = "Repulsed"
+                var gc3 = randi_range(int(landed_s * 0.6), int(landed_s * 0.8))
+                assault_casualties += gc3
+                beach_data.allied_casualties += gc3
+                var survivors = max(0, landed_s - gc3)
+                beach_data.allied_prisoners = survivors     # survivors mostly captured/withdrawn
+                beach_data.landed_force = 0                 # no lodgement remains
+                beach_data.enemy_casualties = randi_range(int(garrison * 0.1), int(garrison * 0.2))
+                report += "    > Outcome: Landing REPULSED.\n"
+
+        else:
+            beach_data.beach_status = "No Landing"
+            report += "    > Outcome: No forces made it ashore.\n"
+
+        # --- Per-beach summary with breakdown ---
+        report += "  - Summary:\n"
+        report += "    > Approach losses at sea: " + str(approach_casualties) + "\n"
+        report += "    > Assault losses ashore: " + str(assault_casualties) + "\n"
+        report += "    > Total Allied Casualties: " + str(beach_data.allied_casualties) + "\n"
+        report += "    > Force holding the beach: " + str(beach_data.landed_force) + " men, " + str(beach_data.operational_tanks) + " tanks.\n\n"
+
+    display_text.text = report
+
+
+func start_reinforcement_assignment_phase():
+    current_phase = Phases.REINFORCEMENT_ASSIGNMENT; current_assignment_index = 0; reinforcement_plan = {}; input_text.editable = true; ask_for_next_reinforcement_assignment()
+func ask_for_next_reinforcement_assignment():
+    var assigned = 0
+    for beach in reinforcement_plan: assigned += reinforcement_plan[beach]
+    var remaining = TOTAL_REINFORCEMENT_BARGES - assigned
+    var current_beach = landing_assignment_order[current_assignment_index]
+    var message = "--- REINFORCEMENT PHASE ---\n\nBeachhead Status:\n"
+    for beach_name in landing_assignment_order:
+        message += " > " + beach_name + ": " + targets[beach_name].get("beach_status", "Unknown") + "\n"
+    message += "\nYou have " + str(remaining) + " reinforcement trawlers (200 men each).\nHow many will you assign to " + current_beach + "?"
+    display_text.text = message; input_text.clear(); submit_button.text = "Assign trawlers"
+func process_reinforcement_assignment(player_input):
+    if not player_input.is_valid_int(): display_text.text += "\n\nInvalid input."; return
+    var num = int(player_input)
+    var assigned = 0
+    for beach in reinforcement_plan: assigned += reinforcement_plan[beach]
+    var remaining = TOTAL_REINFORCEMENT_BARGES - assigned
+    if num < 0 or num > remaining: display_text.text += "\n\nInvalid number."; return
+    var current_beach = landing_assignment_order[current_assignment_index]
+    reinforcement_plan[current_beach] = num
+    current_assignment_index += 1
+    if current_assignment_index < landing_assignment_order.size() - 1:
+        ask_for_next_reinforcement_assignment()
+    else:
+        var last_beach = landing_assignment_order.back()
+        reinforcement_plan[last_beach] = remaining - num
+        resolve_reinforcements()
+func resolve_reinforcements():
+    current_phase = Phases.REINFORCEMENT_REPORT
+    var report = display_text.text + "--- REINFORCEMENT ACTION REPORT ---\n\n"
+    for beach_name in landing_assignment_order:
+        report += "== Reinforcements at " + beach_name + " ==\n"
+        var beach_data = targets[beach_name]
+        var barges = reinforcement_plan.get(beach_name, 0)
+        if barges == 0: report += "  > No reinforcements assigned.\n\n"; continue
+        var chance = 0.0
+        match beach_data.get("beach_status", "No Landing"):
+            "Secured": chance = 0.9
+            "Pinned Down": chance = 0.5
+            _: chance = 0.1
+        var landed = 0; var casualties = 0
+        for i in range(barges):
+            if randf() < chance: landed += SOLDIERS_PER_BARGE
+            else: casualties += randi_range(25, 75)
+        beach_data["allied_casualties"] += casualties; beach_data["landed_force"] += landed
+        report += "  > " + str(landed) + " men from the trawlers landed successfully. " + str(casualties) + " casualties sustained.\n\n"
+
+    display_text.text = report; submit_button.disabled = false; start_consolidation_phase()
+func start_consolidation_phase():
+    current_phase = Phases.CONSOLIDATION_ASSIGNMENT; current_assignment_index = 0; consolidation_plan = {}; ask_for_next_consolidation_order()
+func ask_for_next_consolidation_order():
+    var current_beach = landing_assignment_order[current_assignment_index]; var beach_data = targets[current_beach]; var status = beach_data.get("beach_status", "No Landing")
+    var message = "--- CONSOLIDATION PHASE ---\n\n"; message += "Orders for " + current_beach + " (Status: " + status + ")\n"; message += "Landed Force: ~" + str(beach_data.get("landed_force", 0)) + " men, " + str(beach_data.get("operational_tanks", 0)) + " tanks.\n\n"; message += "Available Orders:\n"
+    if status == "Secured": message += "1: Assault Battery (High Risk)\n2: Call Naval Support (Soften Battery)\n3: Redeploy Forces (Move troops to another beach)\n4: Dig In\n"
+    elif status == "Pinned Down": message += "1: Call Naval Support (Help break out)\n2: Dig In (Hold position)\n"
+    else: message += "1: Do Nothing\n"
+    display_text.text = message; input_text.clear(); submit_button.text = "Confirm Order"
+func process_consolidation_choice(player_input):
+    var current_beach = landing_assignment_order[current_assignment_index]; var status = targets[current_beach].get("beach_status", "No Landing"); var choice = ""
+    if status == "Secured":
+        if player_input == "1": choice = "assault"
+        elif player_input == "2": choice = "support"
+        elif player_input == "3": temp_redeployment_source = current_beach; ask_for_redeployment_destination(); return
+        elif player_input == "4": choice = "dig_in"
+        else: display_text.text += "\n\nInvalid choice."; return
+    elif status == "Pinned Down":
+        if player_input == "1": choice = "support"
+        elif player_input == "2": choice = "dig_in"
+        else: display_text.text += "\n\nInvalid choice."; return
+    else: choice = "dig_in"
+    consolidation_plan[current_beach] = {"action": choice}; current_assignment_index += 1
+    if current_assignment_index < landing_assignment_order.size(): ask_for_next_consolidation_order()
+    else: resolve_consolidation_phase()
+func ask_for_redeployment_destination():
+    var message = "--- Redeploy From " + temp_redeployment_source + " ---\n\nSelect destination beach:\n"; var option_num = 1
+    for beach_name in landing_assignment_order:
+        if beach_name != temp_redeployment_source: message += str(option_num) + ": " + beach_name + "\n"; option_num += 1
+    display_text.text = message; input_text.clear(); submit_button.text = "Confirm Destination"
+func process_redeployment_destination(player_input):
+    var destination = ""; var valid_options = []; for beach in landing_assignment_order:
+        if beach != temp_redeployment_source: valid_options.append(beach)
+    if player_input == "1" and valid_options.size() >= 1: destination = valid_options[0]
+    elif player_input == "2" and valid_options.size() >= 2: destination = valid_options[1]
+    else: display_text.text += "\n\nInvalid destination."; return
+    consolidation_plan[temp_redeployment_source] = {"action": "redeploy", "to": destination}; temp_redeployment_source = ""
+    current_assignment_index += 1
+    if current_assignment_index < landing_assignment_order.size(): ask_for_next_consolidation_order()
+    else: resolve_consolidation_phase()
+func resolve_consolidation_phase():
+    current_phase = Phases.CONSOLIDATION_RESOLUTION
+    var report = display_text.text + "\n--- CONSOLIDATION REPORT ---\n\n"
+    for beach_name in landing_assignment_order:
+        var plan = consolidation_plan.get(beach_name)
+        if not plan: continue
+        var beach_data = targets[beach_name]
+        report += "== Orders for " + beach_name + " ==\n"
+        match plan["action"]:
+            "assault": report += "  > Forces are preparing to assault the battery.\n"
+            "support":
+                var reduction = randi_range(50, 150)
+                beach_data["battery_strength"] = max(0, beach_data["battery_strength"] - reduction)
+                report += "  > Naval guns bombard the battery, reducing its strength.\n"
+            "redeploy":
+                var source_data = targets[beach_name]; var dest_data = targets[plan["to"]]; var force_to_move = int(source_data.get("landed_force", 0) * 0.5)
+                var attrition_rate = randf_range(0.2, 0.4); if source_data.get("operational_tanks", 0) > 0: attrition_rate = randf_range(0.05, 0.15)
+                var casualties = int(force_to_move * attrition_rate); var arrived_force = force_to_move - casualties
+                source_data["landed_force"] -= force_to_move; source_data["allied_casualties"] += casualties; dest_data["landed_force"] += arrived_force
+                report += "  > Redeploying " + str(force_to_move) + " men to " + plan["to"] + ".\n    > The column suffered " + str(casualties) + " casualties en route.\n"
+            "dig_in": report += "  > Forces are digging in and consolidating their position.\n"
+    display_text.text = report + "\n"; await get_tree().create_timer(1.0).timeout; resolve_battery_assaults()
+func resolve_battery_assaults():
+    var report = display_text.text + "--- BATTERY ASSAULT REPORT ---\n\n"
+    for beach_name in landing_assignment_order:
+        if consolidation_plan.get(beach_name, {}).get("action") == "assault":
+            report += "== Assault on " + beach_name + " Batteries ==\n"
+            var beach_data = targets[beach_name]
+            var TANK_BONUS_VS_FORTS = TANK_COMBAT_BONUS * 2
+            var allied_power = beach_data.get("landed_force", 0) + (beach_data.get("operational_tanks", 0) * TANK_BONUS_VS_FORTS); var battery_power = beach_data.get("battery_strength", 0)
+            if allied_power > battery_power:
+                beach_data["battery_status"] = "Captured"; var ac = randi_range(int(beach_data.get("landed_force", 0) * 0.1), int(beach_data.get("landed_force", 0) * 0.25))
+                beach_data["allied_casualties"] += ac; beach_data["landed_force"] -= ac; report += "  > SUCCESS! The battery has been captured. (" + str(ac) + " casualties)\n\n"
+            else:
+                var ac = randi_range(int(beach_data.get("landed_force", 0) * 0.4), int(beach_data.get("landed_force", 0) * 0.6))
+                beach_data["allied_casualties"] += ac; beach_data["landed_force"] -= ac; report += "  > FAILED! The assault was repulsed with heavy losses. (" + str(ac) + " casualties)\n\n"
+    display_text.text = report; determine_final_outcome()
+func determine_final_outcome():
+    current_phase = Phases.FINAL_OUTCOME; submit_button.disabled = true; submit_button.text = "Operation Complete"
+    var report = display_text.text + "--- FINAL OPERATION OUTCOME ---\n\n"; var progress_roll = randi_range(1, 10); var passchendaele_status = ""
+    if progress_roll <= 4: passchendaele_status = "Stalled in the mud"
+    elif progress_roll <= 8: passchendaele_status = "Making slow, costly progress"
+    else: passchendaele_status = "Achieving a breakthrough"
+    report += "Intelligence from the Ypres Salient reports the main offensive is...\n > " + passchendaele_status + ".\n\n"
+    var victory_score = 0
+    for beach_name in landing_assignment_order:
+        var beach_data = targets[beach_name]
+        if beach_data.get("beach_status") == "Secured": victory_score += 2
+        if beach_data.get("battery_status") == "Captured": victory_score += 3
+    if passchendaele_status.begins_with("Achieving"): victory_score += 5
+    elif passchendaele_status.begins_with("Making"): victory_score += 2
+    if victory_score >= 12: report += "DECISIVE VICTORY!\nThe coastal landings linked up with the breakthrough from Ypres. The German flank has collapsed!\nThis operation will significantly shorten the war."
+    elif victory_score >= 7: report += "SUBSTANTIAL VICTORY!\nA solid lodgement has been established on the coast. While the main offensive has not fully broken through, your success has created a major threat that the Germans cannot ignore."
+    elif victory_score >= 3: report += "MARGINAL SUCCESS.\nA tenuous beachhead has been secured, but at a terrible cost. The main offensive is bogged down, leaving your forces isolated."
+    else: report += "COSTLY FAILURE.\nThe landings were repulsed or contained. The main offensive has stalled. Operation Hush has become another bloody sacrifice for little gain."
+    var total_casualties = 0; for beach_name in landing_assignment_order: total_casualties += targets[beach_name].get("allied_casualties", 0)
+    report += "\n\nTotal Operation Casualties: " + str(total_casualties); display_text.text = report
+func resolve_enemy_reinforcements():
+    if threat_level == 0: return
+    display_text.text += "\n\n**WARNING: Enemy reacting to operational delays!**"; await get_tree().create_timer(1.5).timeout
+    var reinforced = false
+    for i in range(threat_level):
+        if randf() < 0.3:
+            var random_beach = landing_assignment_order.pick_random()
+            targets[random_beach]["garrison"] += randi_range(50, 100); reinforced = true
+    if reinforced: display_text.text += "\n**Enemy garrisons have been reinforced!**"; await get_tree().create_timer(1.5).timeout
+    var gas_chance = threat_level * 0.1
+    if not mustard_gas_used and randf() < gas_chance:
+        mustard_gas_used = true; var gas_target_beach = landing_assignment_order.pick_random()
+        targets[gas_target_beach]["mustard_gas"] = true
+        display_text.text += "\n\n**CATASTROPHE: Enemy has prepared a mustard gas attack at " + gas_target_beach + "!**"; await get_tree().create_timer(2.0).timeout
+func resolve_submarine_attack(assigned_monitors):
+    var total_ships = assigned_monitors.size()
+    var sub_chance = total_ships * 0.02
+    if q_ship_assignment == "screen": 
+        sub_chance *= 0.1
+       # Light conditions: subs are boldest in clear daylight, more tentative at night
+        if time_of_day_effective == "day":
+            sub_chance *= 1.25
+        elif time_of_day_effective == "night":
+            sub_chance *= 0.8 
+        
+    if randf() < sub_chance:
+        display_text.text += "\n\n**U-BOAT ATTACK!**"; await get_tree().create_timer(1.0).timeout
+        var target_ship = assigned_monitors.pick_random()
+        if target_ship["status"] != "Sunk":
+            target_ship["status"] = "Sunk"; display_text.text += "\n > " + target_ship["name"] + " has been torpedoed and sunk!"; await get_tree().create_timer(1.5).timeout
+            return true
+    return false
+func resolve_fleet_submarine_attack():
+    
+    if naval_support_ships.is_empty():
+        return
+    # Ships still present (not already sunk/disabled this turn)
+    var active: Array = []
+    if typeof(naval_support_ships) == TYPE_ARRAY:
+        for s in naval_support_ships:
+            if typeof(s) == TYPE_DICTIONARY and s.get("status", "") == "Ready":
+                active.append(s)
+    # if not an array, active stays empty and the function will quietly do nothing
+
+    if active.is_empty():
+        return
+
+    var sub_chance: float = min(0.25, active.size() * FIRE_SUPPORT_BASE_SUB_CHANCE)
+
+    if q_ship_assignment == "fleet":
+        sub_chance *= 0.2  # screened battleships
+
+    if randf() < sub_chance:
+        display_text.text += "\n\n**U-BOAT CONTACT NEAR THE FIRE-SUPPORT LINE!**"
+        await get_tree().create_timer(0.7).timeout
+        var target = active.pick_random()
+        if target.get("class") == "steam":
+            target["status"] = "Sunk"
+            display_text.text += "\n > " + target["name"] + " has been torpedoed and sunk!"
+        else:
+            target["status"] = "Disabled"
+            display_text.text += "\n > " + target["name"] + " has been torpedoed and is out of action!"
+        await get_tree().create_timer(1.0).timeout
+
+func _fmt_ship_list(arr: Array) -> String:
+    var s := ""
+    for i in range(arr.size()):
+        s += str(arr[i])
+        if i < arr.size() - 1:
+            s += ", "
+    return s
+func _count_active_qe() -> int:
+    var n := 0
+    for s in naval_support_ships:
+        if s.get("class") == "qe" and s.get("status") == "Ready":
+            n += 1
+    return n
