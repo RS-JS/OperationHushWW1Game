@@ -592,12 +592,13 @@ func start_air_doctrine_phase():
 	var tex = load("res://assets/Flashheart.jpeg")
 	choice_image.texture = tex
 	choice_image.visible = true
-	display_text.text = "--- STEP 7: AIR DOCTRINE ---\n\nThe Royal Flying Corps is eager to help. Where do you want them?\n\n • Air Reconnaissance: Estimate enemy strength.\n • Ground Attack: Strafe trenches and gun-pits."
-	setup_choices(["Air Reconnaissance", "Ground Attack"])
+	display_text.text = "--- STEP 7: AIR DOCTRINE ---\n\nThe Royal Flying Corps is eager to help. Where do you want them?\n\n • Air Reconnaissance: Estimate enemy strength.\n • Ground Attack: Strafe trenches and gun-pits.\n • Tally Ho: A suicidal run towards the artillery guns, increasing the chance enemy artillery is reduced at the pontoon stage."
+	setup_choices(["Air Reconnaissance", "Ground Attack", "Tally Ho"])
 
 func process_air_doctrine_choice(choice):
 	if choice == "Air Reconnaissance": air_doctrine = "recon"
 	elif choice == "Ground Attack": air_doctrine = "ground_attack"
+	elif choice == "Tally Ho": air_doctrine = "tally_ho"
 	start_assault_doctrine_phase()
 
 func start_assault_doctrine_phase():
@@ -960,6 +961,17 @@ func resolve_pontoon_assault():
 		report += "In full daylight, the pontoon monitors advance boldly toward the enemy shore...\n\n"
 
 	for beach_name in assignment_order:
+		# --- Tally Ho effect (33% chance, -15% enemy artillery per beach) ---
+		if air_doctrine == "tally_ho" and randf() < 0.33:
+			var target: Dictionary = targets[beach_name]  # <-- explicit type
+			var initial_artillery: int = int(target.get("artillery", 0))
+			if initial_artillery > 0:
+				var reduction: int = floori(initial_artillery * 0.15)
+				if reduction > 0:
+					target["artillery"] = max(0, initial_artillery - reduction)
+					report += "RFC executes 'Tally Ho' over " + beach_name + "! " + str(reduction) + " enemy guns knocked out in a daring low-level attack.\n\n"
+		# ---------------------------------------------------------------
+		
 		report += resolve_beach_pontoon_assault(beach_name)
 		report += "\n"
 
@@ -999,6 +1011,25 @@ func resolve_beach_pontoon_assault(beach_name: String) -> String:
 	if tank_lighters_assigned > 0:
 		report += ", " + str(tank_lighters_assigned) + " tank lighters (" + str(total_tank_count) + " tanks)"
 	report += "\n"
+	
+	# --- Ground Attack air doctrine effect (10% artillery reduction, 7% garrison reduction) ---
+	if air_doctrine == "ground_attack":
+		var initial_artillery = target_data.artillery
+		var initial_garrison = target_data.garrison
+		
+		var artillery_reduction = floori(initial_artillery * 0.10)
+		var garrison_reduction = floori(initial_garrison * 0.07)
+		
+		if artillery_reduction > 0 or garrison_reduction > 0:
+			target_data.artillery = max(0, target_data.artillery - artillery_reduction)
+			target_data.garrison = max(0, target_data.garrison - garrison_reduction)
+			
+			report += "**RFC GROUND ATTACK**: SE5s swoop low through the defenses!\n"
+			if artillery_reduction > 0:
+				report += " > " + str(artillery_reduction) + " guns knocked out by strafing runs!\n"
+			if garrison_reduction > 0:
+				report += " > " + str(garrison_reduction) + " defenders eliminated in trench attacks!\n"
+			report += "\n"
 	
 	var approach_results = resolve_approach_phase(beach_name, monitors_assigned, tank_lighters_assigned, pontoon_monitors_count)
 	report += approach_results.report
@@ -1074,6 +1105,11 @@ func resolve_approach_phase(beach_name: String, monitors_count: int, tank_lighte
 	var alertness_modifier = 1.0 + (threat_level * 0.15)
 	var final_hit_chance = base_hit_chance * visibility_modifier * alertness_modifier
 	
+	# --- Recon air doctrine effect (25% reduction in approach phase losses) ---
+	if air_doctrine == "recon":
+		final_hit_chance *= 0.75
+		phase_report += "RFC reconnaissance provides early warning of enemy gun positions!\n"
+	
 	phase_report += "Approach Phase: " + str(artillery_guns) + " guns open fire (Hit chance: " + str(int(final_hit_chance * 100)) + "% per vessel)\n"
 	
 	var phase_results = {
@@ -1145,6 +1181,11 @@ func resolve_submarine_phase(beach_name: String, monitors_count: int, tank_light
 			base_sub_threat *= 1.3
 		"day":
 			base_sub_threat *= 0.8
+	
+	# --- Recon air doctrine effect (33% reduction in submarine phase losses) ---
+	if air_doctrine == "recon":
+		base_sub_threat *= 0.67
+		phase_report += "RFC scouts spotted submarine movements, flotilla takes evasive action!\n"
 	
 	if randf() < base_sub_threat:
 		phase_report += "SUBMARINE CONTACT! Periscope spotted off the port bow!\n"
