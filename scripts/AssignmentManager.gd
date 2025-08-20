@@ -6,6 +6,11 @@ var main_controller: Control
 var data_manager: DataManager
 var ui_manager: UIManager
 
+var assignments_completed = {
+	"tanks": false,
+	"troops": false
+}
+
 var current_assignment_type = "troops"  # "troops" or "tanks"
 var assignment_values = {}  # Beach name -> number assigned
 var current_assignment_index = 0
@@ -23,6 +28,8 @@ func start_pontoon_assignments():
 	data_manager.pontoon_assault_plan.clear()
 	data_manager.tank_assault_plan.clear()
 	current_assignment_index = 0
+	
+	assignments_completed = {"tanks": false, "troops": false}
 	
 	# Determine if we need to assign tanks first
 	if data_manager.tanks_chosen and data_manager.get_tank_lighters_available() > 0:
@@ -98,34 +105,35 @@ func _on_assignment_confirm():
 
 func _advance_assignment_phase():
 	"""Determine what assignment phase comes next"""
-	print("Advance called. Tank plan:", data_manager.tank_assault_plan,)
+	print("Advance called. Tank plan:", data_manager.tank_assault_plan)
 	print("=== ASSIGNMENT PHASE ROUTER ===")
 	print("Current phase: ", current_assignment_type)
-	print("Tanks chosen: ", data_manager.tanks_chosen)
-	print("Tank plan empty: ", data_manager.tank_assault_plan.is_empty())
-	print("Troop plan empty: ", data_manager.pontoon_assault_plan.is_empty())
+	print("Assignments completed: ", assignments_completed)
 	
 	var tank_lighters_exist = data_manager.get_tank_lighters_available() > 0
 	var troop_monitors_exist = data_manager.get_troop_monitors_available() > 0
 	
-	print("Tank lighters exist: ", tank_lighters_exist)
-	print("Troop monitors exist: ", troop_monitors_exist)
+	# Mark current assignment as completed
+	if current_assignment_type == "tanks":
+		assignments_completed["tanks"] = true
+	elif current_assignment_type == "troops":
+		assignments_completed["troops"] = true
 	
-	# Check if we need to assign tanks next
-	if tank_lighters_exist and data_manager.tank_assault_plan.is_empty():
+	# Check if we need to assign tanks (and haven't already)
+	if tank_lighters_exist and not assignments_completed["tanks"]:
 		print("-> Starting tank assignment")
 		current_assignment_type = "tanks"
 		_start_assignment_phase()
 		return
 	
 	# Check if we need a troop briefing after tanks
-	if tank_lighters_exist and not data_manager.tank_assault_plan.is_empty() and data_manager.pontoon_assault_plan.is_empty():
+	if assignments_completed["tanks"] and not assignments_completed["troops"] and troop_monitors_exist:
 		print("-> Starting troop briefing after tanks")
 		_show_troop_assignment_briefing()
 		return
 	
-	# Check if we need to assign troops
-	if troop_monitors_exist and data_manager.pontoon_assault_plan.is_empty():
+	# Check if we need to assign troops (and haven't already)
+	if troop_monitors_exist and not assignments_completed["troops"]:
 		print("-> Starting troop assignment")
 		current_assignment_type = "troops"
 		_start_assignment_phase()
@@ -134,7 +142,6 @@ func _advance_assignment_phase():
 	# All assignments complete
 	print("-> All assignments complete, proceeding...")
 	_complete_assignments()
-
 func _show_troop_assignment_briefing():
 	"""Show briefing between tank and troop assignments"""
 	ui_manager.show_standard_ui()
